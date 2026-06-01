@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mongo-synth"
+version = "1.0.0"
+description = "A standalone, schema-based data generator and bulk ingestion utility for MongoDB"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+dependencies = [
+    "pymongo>=4.0.0",
+    "hypothesis>=6.0.0",
+    "hypothesis-jsonschema>=0.19.0",
+    "faker>=18.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+mongo-synth = "mongo_synth.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
