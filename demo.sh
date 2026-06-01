@@ -15,6 +15,16 @@ SCHEMA_FILE="demo_schema.json"
 MODEL_FILE="demo_model.py"
 INFERRED_FILE="demo_inferred.json"
 
+# Check for debug mode args
+DEBUG_MODE=false
+VERBOSE_FLAG=""
+for arg in "$@"; do
+    if [ "$arg" = "--debug" ] || [ "$arg" = "-d" ]; then
+        DEBUG_MODE=true
+        VERBOSE_FLAG="--verbose"
+    fi
+done
+
 # Cleanup function to teardown Docker and files
 cleanup() {
     echo -e "\n${BOLD}${YELLOW}[Teardown] Cleaning up resources...${RESET}"
@@ -43,6 +53,9 @@ echo -e "${PURPLE}${BOLD}         🍃 MONGO-SYNTH INTERACTIVE DEMO 🍃        
 echo -e "${CYAN}${BOLD}======================================================${RESET}"
 echo -e "This script demonstrates generation, ingestion, and validation"
 echo -e "against real MongoDB containers of different versions."
+if [ "$DEBUG_MODE" = true ]; then
+    echo -e "${RED}${BOLD}⚠️  DEBUG MODE ENABLED (Maximal Verbosity) ⚠️${RESET}"
+fi
 echo -e ""
 
 # 1. MongoDB Version Selection
@@ -112,6 +125,12 @@ case $VAL_OPT in
     1|*) VAL_STRATEGY="structural" ;;
 esac
 echo -e "👉 Selected validator: ${GREEN}${BOLD}${VAL_STRATEGY}${RESET}\n"
+
+# Enable bash execution tracing if debug mode is active
+if [ "$DEBUG_MODE" = true ]; then
+    echo -e "${YELLOW}[Debug] Enabling bash execution trace (set -x)...${RESET}"
+    set -x
+fi
 
 # --- Launch Container ---
 echo -e "${BLUE}${BOLD}[1/4] Starting MongoDB ${MONGO_VERSION} Container...${RESET}"
@@ -198,9 +217,9 @@ echo -e ""
 
 # --- Run Generation and Ingestion ---
 echo -e "${BLUE}${BOLD}[3/4] Running mongo-synth Generation & Ingestion...${RESET}"
-echo -e "Running: ${CYAN}.venv/bin/mongo-synth generate ${GEN_ARGS} --uri ${MONGO_URI} --db demo_db --collection demo_coll --count ${DOC_COUNT} --clear${RESET}"
+echo -e "Running: ${CYAN}.venv/bin/mongo-synth generate ${GEN_ARGS} --uri ${MONGO_URI} --db demo_db --collection demo_coll --count ${DOC_COUNT} --clear ${VERBOSE_FLAG}${RESET}"
 
-.venv/bin/mongo-synth generate ${GEN_ARGS} --uri "${MONGO_URI}" --db demo_db --collection demo_coll --count "${DOC_COUNT}" --clear
+.venv/bin/mongo-synth generate ${GEN_ARGS} --uri "${MONGO_URI}" --db demo_db --collection demo_coll --count "${DOC_COUNT}" --clear ${VERBOSE_FLAG}
 
 echo -e "\n${GREEN}${BOLD}✓ Generation and Ingestion completed!${RESET}\n"
 
@@ -249,7 +268,7 @@ if [ "$DATA_TYPE" = "schema" ]; then
     cp "${SCHEMA_FILE}" "${INFERRED_FILE}"
     
     echo -e "${YELLOW}Test 1: Validate identical schemas (Should pass):${RESET}"
-    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}"
+    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" ${VERBOSE_FLAG}
     
     # Generate inferred schema with mismatch
     cat <<EOT > "${INFERRED_FILE}"
@@ -266,7 +285,7 @@ if [ "$DATA_TYPE" = "schema" ]; then
 EOT
     echo -e "\n${YELLOW}Test 2: Validate mismatched schema types (Should fail):${RESET}"
     # Run, ignoring the non-zero validation status exit code to finish execution cleanly
-    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" || true
+    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" ${VERBOSE_FLAG} || true
 
 elif [ "$DATA_TYPE" = "pydantic" ]; then
     # Translate model to json schema first using Python
@@ -282,7 +301,7 @@ with open('demo_schema.json', 'w') as f:
     # Success case
     cp "${SCHEMA_FILE}" "${INFERRED_FILE}"
     echo -e "${YELLOW}Test 1: Validate generated Pydantic schema (Should pass):${RESET}"
-    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}"
+    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" ${VERBOSE_FLAG}
 
     # Failure case
     cat <<EOT > "${INFERRED_FILE}"
@@ -295,13 +314,18 @@ with open('demo_schema.json', 'w') as f:
 }
 EOT
     echo -e "\n${YELLOW}Test 2: Validate incorrect field type / missing fields (Should fail):${RESET}"
-    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" || true
+    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" ${VERBOSE_FLAG} || true
 
 else # anomaly
     # The anomaly generated data contains anomalies, let's show validation checks
     cp "${SCHEMA_FILE}" "${INFERRED_FILE}"
     echo -e "${YELLOW}Test 1: Comparing anomaly schema against base schema:${RESET}"
-    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}"
+    .venv/bin/mongo-synth validate --schema "${SCHEMA_FILE}" --inferred "${INFERRED_FILE}" --validator "${VAL_STRATEGY}" ${VERBOSE_FLAG}
+fi
+
+# Disable trace output at the end of runs if it was enabled
+if [ "$DEBUG_MODE" = true ]; then
+    set +x
 fi
 
 echo -e ""
