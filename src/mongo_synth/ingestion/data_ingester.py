@@ -1,5 +1,5 @@
 import logging
-from typing import Iterable, Dict, Any, Optional
+from typing import Iterable, Dict, Any, Optional, Tuple, List
 from pymongo.collection import Collection
 
 logger = logging.getLogger(__name__)
@@ -7,6 +7,80 @@ logger = logging.getLogger(__name__)
 class SecurityError(Exception):
     """Raised when an operation violates security constraints."""
     pass
+
+def parse_mongo_uri_safely(uri: str) -> Tuple[List[Tuple[str, Optional[int]]], Optional[str]]:
+    """
+    Parses a MongoDB connection URI into a list of node tuples (host, port) and a database name.
+    Attempts to use PyMongo's parse_uri first, and falls back to a manual parser on DNS/parsing failures.
+    """
+    try:
+        from pymongo.uri_parser import parse_uri
+        parsed = parse_uri(uri)
+        return parsed.get("nodelist", []), parsed.get("database")
+    except Exception:
+        pass
+
+    scheme = "mongodb"
+    if uri.startswith("mongodb://"):
+        rest = uri[len("mongodb://"):]
+    elif uri.startswith("mongodb+srv://"):
+        scheme = "mongodb+srv"
+        rest = uri[len("mongodb+srv://"):]
+    else:
+        rest = uri
+
+    if '@' in rest:
+        _, rest = rest.rsplit('@', 1)
+
+    db_part = ""
+    hosts_part = rest
+    if '/' in rest:
+        hosts_part, db_part = rest.split('/', 1)
+        if '?' in db_part:
+            db_part = db_part.split('?', 1)[0]
+
+    database = db_part if db_part else None
+
+    nodelist = []
+    for host_str in hosts_part.split(','):
+        if not host_str:
+            continue
+        if host_str.startswith('['):
+            end_bracket = host_str.find(']')
+            if end_bracket != -1:
+                host = host_str[1:end_bracket]
+                port_part = host_str[end_bracket+1:]
+                if port_part.startswith(':'):
+                    port = int(port_part[1:])
+                else:
+                    port = 27017 if scheme == "mongodb" else None
+            else:
+                host = host_str
+                port = 27017 if scheme == "mongodb" else None
+        else:
+            if ':' in host_str:
+                host, port_str = host_str.split(':', 1)
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    port = 27017 if scheme == "mongodb" else None
+            else:
+                host = host_str
+                port = 27017 if scheme == "mongodb" else None
+
+        nodelist.append((host, port))
+
+    return nodelist, database
+
+def normalize_hosts(nodelist: List[Tuple[str, Optional[int]]]) -> List[Tuple[str, Optional[int]]]:
+    """Normalizes hostnames to lowercase and maps localhost to 127.0.0.1, sorting the node list."""
+    normalized = []
+    for host, port in nodelist:
+        h = host.lower()
+        if h == "localhost":
+            h = "127.0.0.1"
+        normalized.append((h, port))
+    return sorted(normalized)
 
 class DataIngester:
     """
@@ -56,8 +130,41 @@ class DataIngester:
         """
         if not self.live_source_uri:
             logger.warning("live_source_uri is not configured. Safety lock might be ineffective.")
+            return
 
-        if self.live_source_uri and self.target_uri == self.live_source_uri:
+        try:
+            target_nodes, _ = parse_mongo_uri_safely(self.target_uri)
+            live_nodes, live_db = parse_mongo_uri_safely(self.live_source_uri)
+        except Exception as e:
+            logger.warning(f"Failed to parse or normalize URIs, falling back to string match: {e}")
+            if self.target_uri == self.live_source_uri:
+                raise SecurityError(
+                    "Safety Lock Triggered: Attempting to ingest synthetic data into the configured live source URI. "
+                    "This operation is strictly prohibited to prevent production corruption."
+                )
+            return
+
+        # Target database name is best retrieved directly from the collection object to be robust
+        target_db = None
+        if hasattr(self.target_collection, "database") and self.target_collection.database is not None:
+            db_obj = self.target_collection.database
+            # If the database name attribute is a standard string, use it
+            if hasattr(db_obj, "name") and isinstance(db_obj.name, str):
+                target_db = db_obj.name
+
+        # Fall back to target_uri parsed database if collection database name wasn't a valid string
+        if not target_db:
+            _, parsed_target_db = parse_mongo_uri_safely(self.target_uri)
+            target_db = parsed_target_db
+
+        # Compare hosts and database target
+        hosts_match = normalize_hosts(target_nodes) == normalize_hosts(live_nodes)
+        
+        # If live_db is None, it means the whole host is blocked.
+        # Otherwise, block if target_db matches live_db.
+        db_match = (live_db is None) or (target_db == live_db)
+
+        if hosts_match and db_match:
             raise SecurityError(
                 "Safety Lock Triggered: Attempting to ingest synthetic data into the configured live source URI. "
                 "This operation is strictly prohibited to prevent production corruption."

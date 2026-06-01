@@ -13,26 +13,10 @@ from mongo_synth.ingestion.data_ingester import DataIngester
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("mongo_synth.cli")
 
-def main():
-    parser = argparse.ArgumentParser(description="MongoDB Schema-Based Data Generator CLI")
-    parser.add_argument("--schema", required=True, help="Path to JSON Schema or Blueprint JSON file")
-    parser.add_argument("--uri", help="MongoDB connection URI (e.g. mongodb://localhost:27017)")
-    parser.add_argument("--db", help="Target database name")
-    parser.add_argument("--collection", help="Target collection name")
-    parser.add_argument("--count", type=int, help="Number of records to generate")
-    parser.add_argument("--batch-size", type=int, help="Batch size for bulk insertion")
-    parser.add_argument("--seed", type=int, help="Deterministic master seed")
-    parser.add_argument("--profile", help="Path to a JSON file containing statistical probability profiles")
-    parser.add_argument("--anomaly", help="Inject a specific structural/type anomaly")
-    parser.add_argument("--clear", action="store_true", help="Clear the target collection before insertion")
-    parser.add_argument("--live-uri", help="Live URI to check safety lock against")
-    parser.add_argument("--config-file", help="Path to a YAML configuration file to pre-populate parameters")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")
-
-    args = parser.parse_args()
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+def run_generation(args, parser):
+    # Validate required arguments
+    if not args.schema and not args.model:
+        parser.error("one of the arguments --schema or --model is required for generate")
 
     # 1. Load configuration from file if provided
     if args.config_file:
@@ -48,20 +32,24 @@ def main():
     batch_size = args.batch_size if args.batch_size is not None else generator_config.get("generation.batch_size", 5000)
     seed = args.seed if args.seed is not None else generator_config.get("generation.master_seed", 42)
 
-    # 3. Read and parse schema/blueprint file
-    logger.info(f"Loading schema from: {args.schema}")
-    try:
-        with open(args.schema, "r") as f:
-            raw_data = json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to read schema file {args.schema}: {e}")
-        sys.exit(1)
-
-    # Detect if file is raw schema or wrapper blueprint
-    if isinstance(raw_data, dict) and "schema" in raw_data:
-        blueprint = raw_data
+    # 3. Load blueprint / model
+    anomaly_type = args.anomaly
+    if args.model:
+        blueprint = {"model_path": args.model, "metadata": {}}
     else:
-        blueprint = {"schema": raw_data, "metadata": {}}
+        logger.info(f"Loading schema from: {args.schema}")
+        try:
+            with open(args.schema, "r") as f:
+                raw_data = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to read schema file {args.schema}: {e}")
+            sys.exit(1)
+
+        # Detect if file is raw schema or wrapper blueprint
+        if isinstance(raw_data, dict) and "schema" in raw_data:
+            blueprint = raw_data
+        else:
+            blueprint = {"schema": raw_data, "metadata": {}}
 
     # Load external profile if provided
     if args.profile:
@@ -76,8 +64,7 @@ def main():
             sys.exit(1)
 
     # Set anomaly in blueprint if requested via CLI
-    anomaly_type = args.anomaly
-    if anomaly_type:
+    if anomaly_type and not args.model:
         blueprint["schema"]["anomaly_type"] = anomaly_type
 
     # Configure blueprint metadata expected count
@@ -86,13 +73,22 @@ def main():
     blueprint["metadata"]["expected_document_count"] = count
 
     # 4. Instantiate Generator
-    is_anomaly = anomaly_type or blueprint["schema"].get("anomaly_type")
-    if is_anomaly:
-        logger.info(f"Instantiating AnomalyGenerator for anomaly type: {is_anomaly}")
-        generator = AnomalyGenerator(blueprint, count, seed=seed)
+    if args.model:
+        logger.info(f"Instantiating PydanticGenerator for model: {args.model}")
+        from mongo_synth.generators.pydantic_generator import PydanticGenerator
+        generator = PydanticGenerator(blueprint, count, seed=seed)
+        if anomaly_type:
+            logger.info(f"Wrapping Pydantic schema in AnomalyGenerator for anomaly: {anomaly_type}")
+            blueprint["schema"]["anomaly_type"] = anomaly_type
+            generator = AnomalyGenerator(blueprint, count, seed=seed)
     else:
-        logger.info("Instantiating JsonSchemaGenerator")
-        generator = JsonSchemaGenerator(blueprint, count, seed=seed)
+        is_anomaly = anomaly_type or blueprint["schema"].get("anomaly_type")
+        if is_anomaly:
+            logger.info(f"Instantiating AnomalyGenerator for anomaly type: {is_anomaly}")
+            generator = AnomalyGenerator(blueprint, count, seed=seed)
+        else:
+            logger.info("Instantiating JsonSchemaGenerator")
+            generator = JsonSchemaGenerator(blueprint, count, seed=seed)
 
     # 5. Generate batch data
     logger.info(f"Generating {count} synthetic documents...")
@@ -133,6 +129,123 @@ def main():
         sys.exit(1)
 
     print(f"\n✅ Data generation and ingestion complete! {inserted_count} records inserted into {db_name}.{collection_name}")
+
+def run_validation(args):
+    from mongo_synth.validation.validator import (
+        StructuralValidator,
+        SubschemaValidator,
+        FunctionalValidator,
+        SimilarityValidator,
+        ProjectedFunctionalValidator,
+        PrecisionValidator,
+    )
+
+    validators = {
+        "structural": StructuralValidator,
+        "subschema": SubschemaValidator,
+        "functional": FunctionalValidator,
+        "similarity": SimilarityValidator,
+        "projected": ProjectedFunctionalValidator,
+        "precision": PrecisionValidator,
+    }
+
+    # Load ground truth schema
+    logger.info(f"Loading ground truth schema from: {args.schema}")
+    try:
+        with open(args.schema, "r") as f:
+            gt_schema = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to read ground truth schema {args.schema}: {e}")
+        sys.exit(1)
+
+    # Load inferred schema
+    logger.info(f"Loading inferred schema from: {args.inferred}")
+    try:
+        with open(args.inferred, "r") as f:
+            inferred_schema = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to read inferred schema {args.inferred}: {e}")
+        sys.exit(1)
+
+    # Select validator
+    validator_class = validators.get(args.validator)
+    if not validator_class:
+        logger.error(f"Unknown validator type: {args.validator}")
+        sys.exit(1)
+
+    logger.info(f"Running validation with: {args.validator}")
+    validator = validator_class()
+    try:
+        result = validator.validate(inferred_schema, gt_schema)
+    except Exception as e:
+        logger.error(f"Validation execution failed: {e}", exc_info=True)
+        sys.exit(1)
+
+    print(f"\n=== Validation Result (Method: {args.validator}) ===")
+    if result.get("valid"):
+        print("✅ VALID: The inferred schema conforms to the ground truth.")
+        for k, v in result.items():
+            if k not in ["valid", "method"]:
+                print(f"  {k}: {v}")
+        sys.exit(0)
+    else:
+        print("❌ INVALID: The inferred schema does not conform to the ground truth.")
+        for k, v in result.items():
+            if k not in ["valid", "method"]:
+                print(f"  {k}: {v}")
+        sys.exit(1)
+
+def main():
+    # Insert 'generate' subcommand if legacy flags are used directly
+    if len(sys.argv) > 1 and sys.argv[1] not in ["generate", "validate", "-h", "--help"]:
+        sys.argv.insert(1, "generate")
+
+    parser = argparse.ArgumentParser(description="MongoDB Schema-Based Data Generator CLI")
+    subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
+
+    # --- GENERATE SUBCOMMAND ---
+    gen_parser = subparsers.add_parser("generate", help="Generate and ingest synthetic data")
+    gen_parser.add_argument("--schema", help="Path to JSON Schema or Blueprint JSON file")
+    gen_parser.add_argument("--model", help="Python path to Pydantic model class (e.g. my_module.MyModel)")
+    gen_parser.add_argument("--uri", help="MongoDB connection URI (e.g. mongodb://localhost:27017)")
+    gen_parser.add_argument("--db", help="Target database name")
+    gen_parser.add_argument("--collection", help="Target collection name")
+    gen_parser.add_argument("--count", type=int, help="Number of records to generate")
+    gen_parser.add_argument("--batch-size", type=int, help="Batch size for bulk insertion")
+    gen_parser.add_argument("--seed", type=int, help="Deterministic master seed")
+    gen_parser.add_argument("--profile", help="Path to a JSON file containing statistical probability profiles")
+    gen_parser.add_argument("--anomaly", help="Inject a specific structural/type anomaly")
+    gen_parser.add_argument("--clear", action="store_true", help="Clear the target collection before insertion")
+    gen_parser.add_argument("--live-uri", help="Live URI to check safety lock against")
+    gen_parser.add_argument("--config-file", help="Path to a YAML configuration file to pre-populate parameters")
+    gen_parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")
+
+    # --- VALIDATE SUBCOMMAND ---
+    val_parser = subparsers.add_parser("validate", help="Validate inferred schema against ground truth")
+    val_parser.add_argument("--schema", required=True, help="Path to ground truth schema JSON file")
+    val_parser.add_argument("--inferred", required=True, help="Path to inferred schema JSON file")
+    val_parser.add_argument(
+        "--validator", 
+        choices=["structural", "subschema", "functional", "similarity", "projected", "precision"],
+        default="structural",
+        help="Type of validation to run (default: structural)"
+    )
+    val_parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")
+
+    args = parser.parse_args()
+
+    # Default command is generate if none specified
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    if args.command == "generate":
+        run_generation(args, gen_parser)
+    elif args.command == "validate":
+        run_validation(args)
 
 if __name__ == "__main__":
     main()

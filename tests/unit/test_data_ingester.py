@@ -5,13 +5,40 @@ from mongo_synth.ingestion.data_ingester import DataIngester, SecurityError
 def test_data_ingester_safety_lock():
     """
     Tests that the DataIngester raises a SecurityError when the target URI
-    matches the configured live source URI.
+    matches the configured live source URI under various normalization situations.
     """
-    live_uri = "mongodb+srv://production-cluster"
     mock_collection = MagicMock()
 
+    # Identical URIs
     with pytest.raises(SecurityError, match="Safety Lock Triggered"):
-        DataIngester(target_collection=mock_collection, target_uri=live_uri, live_source_uri=live_uri)
+        DataIngester(target_collection=mock_collection, target_uri="mongodb://localhost:27017/test", live_source_uri="mongodb://localhost:27017/test")
+
+    # Localhost vs 127.0.0.1
+    with pytest.raises(SecurityError, match="Safety Lock Triggered"):
+        DataIngester(target_collection=mock_collection, target_uri="mongodb://localhost:27017/test", live_source_uri="mongodb://127.0.0.1:27017/test")
+
+    # Casing of hostnames
+    with pytest.raises(SecurityError, match="Safety Lock Triggered"):
+        DataIngester(target_collection=mock_collection, target_uri="mongodb://PROD-HOST:27017/test", live_source_uri="mongodb://prod-host:27017/test")
+
+    # User credentials and query params in target_uri
+    with pytest.raises(SecurityError, match="Safety Lock Triggered"):
+        DataIngester(target_collection=mock_collection, target_uri="mongodb://user:pass@localhost:27017/test?authSource=admin", live_source_uri="mongodb://localhost:27017/test")
+
+    # Multiple hosts in different order
+    with pytest.raises(SecurityError, match="Safety Lock Triggered"):
+        DataIngester(target_collection=mock_collection, target_uri="mongodb://host1:27017,host2:27018/test", live_source_uri="mongodb://host2:27018,host1:27017/test")
+
+    # live_source_uri without database (blocks all databases on that host)
+    with pytest.raises(SecurityError, match="Safety Lock Triggered"):
+        DataIngester(target_collection=mock_collection, target_uri="mongodb://localhost:27017/my_test_db", live_source_uri="mongodb://localhost:27017/")
+
+    # live_source_uri with database should NOT block a different database
+    mock_collection_other_db = MagicMock()
+    mock_collection_other_db.database.name = "safe_db"
+    
+    # This should succeed without raising SecurityError
+    DataIngester(target_collection=mock_collection_other_db, target_uri="mongodb://localhost:27017/safe_db", live_source_uri="mongodb://localhost:27017/prod_db")
 
 def test_data_ingester_batching():
     """

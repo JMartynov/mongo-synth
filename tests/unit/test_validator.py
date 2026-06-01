@@ -196,3 +196,30 @@ def test_structural_validator_formatting_mismatches():
     assert res["valid"] is False
     assert "... (" in res["error"]
     assert "more)" in res["error"]
+
+def test_subschema_validator():
+    """
+    Test SubschemaValidator logic checking if inferred schema is a subschema
+    of ground truth schema.
+    """
+    from mongo_synth.validation.validator import SubschemaValidator
+    validator = SubschemaValidator()
+
+    # Case 1: Inferred schema is identical to ground truth (subschema should be True)
+    inferred_schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    ground_truth_schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    res = validator.validate(inferred_schema, ground_truth_schema)
+    assert res["valid"] is True
+    assert res["method"] == "subschema"
+
+    # Case 2: Inferred schema is a subset (fewer properties, which is a subschema)
+    inferred_schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    ground_truth_schema = {"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}
+    res = validator.validate(inferred_schema, ground_truth_schema)
+    assert res["valid"] is True
+
+    # Case 3: Inferred schema has extra property (not a subschema if ground_truth is closed)
+    inferred_schema = {"type": "object", "properties": {"name": {"type": "string"}, "extra": {"type": "string"}}}
+    ground_truth_schema = {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": False}
+    res = validator.validate(inferred_schema, ground_truth_schema)
+    assert res["valid"] is False

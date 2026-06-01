@@ -2,7 +2,7 @@ from abc import ABC
 import json
 from hypothesis_jsonschema import from_schema
 from hypothesis import given, settings, HealthCheck, errors
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from bson.objectid import ObjectId
 from bson.decimal128 import Decimal128
 from bson.binary import Binary
@@ -64,36 +64,166 @@ class BaseGenerator(ABC):
         # Replicate to target count if count exceeds pool_size
         if count > pool_size:
             import copy
-            import uuid
-            import random
+            high_card_fields = self._find_high_cardinality_fields(self.schema)
             original_pool = list(batch)
             while len(batch) < count:
                 needed = count - len(batch)
                 chunk = original_pool[:needed]
                 for doc in chunk:
                     cloned = copy.deepcopy(doc)
-                    # Mutate key fields to ensure uniqueness and high cardinality
+                    # Dynamically mutate high-cardinality/unique fields
                     if isinstance(cloned, dict):
-                        # 1. Mutate payload.high_cardinality_metric
-                        if "payload" in cloned and isinstance(cloned["payload"], dict) and "high_cardinality_metric" in cloned["payload"]:
-                            cloned["payload"]["high_cardinality_metric"] = str(uuid.uuid4())
-                        # 2. Mutate device_id
-                        if "device_id" in cloned:
-                            cloned["device_id"] = f"{cloned['device_id']}_{random.randint(100, 999)}"
-                        # 3. Mutate timestamp
-                        if "timestamp" in cloned:
-                            cloned["timestamp"] = datetime.utcnow()
+                        for path, field_schema in high_card_fields:
+                            self._mutate_nested_value(cloned, path, field_schema)
                     batch.append(cloned)
-
-        # Inflate document size to simulate realistic 'Pain Threshold' payloads
-        for doc in batch:
-            if isinstance(doc, dict) and "device_id" in doc:
-                import random
-                doc["device_id"] = f"{doc['device_id']}_{random.randint(100, 999)}_" + ("x" * 8000)
 
         # Apply distribution profile to the batch
         batch = self.apply_distribution_profile(batch)
         return batch
+
+    def _find_high_cardinality_fields(self, schema: Dict[str, Any], current_path: List[str] = None) -> List[Tuple[List[str], Dict[str, Any]]]:
+        """Traverses the schema to find fields that require uniqueness or high cardinality."""
+        if current_path is None:
+            current_path = []
+            
+        if not isinstance(schema, dict):
+            return []
+            
+        fields = []
+        is_unique = False
+        
+        # 1. Any field named "_id" must be unique
+        if current_path and current_path[-1] == "_id":
+            is_unique = True
+            
+        # 2. Schema formats that imply high cardinality
+        fmt = schema.get("format")
+        if fmt in ("uuid", "uuid4"):
+            is_unique = True
+            
+        # 3. Custom properties for uniqueness/cardinality
+        if schema.get("unique") or schema.get("uniqueItems") or schema.get("cardinality") in ("high", "unique"):
+            is_unique = True
+            
+        # 4. bsonType annotations that should be refreshed
+        bson_type = schema.get("bsonType")
+        if bson_type in ("objectId", "date", "timestamp", "regex", "decimal", "binData"):
+            is_unique = True
+            
+        if is_unique and current_path:
+            fields.append((current_path, schema))
+            
+        # Recurse into properties
+        if schema.get("type") == "object" or "properties" in schema:
+            props = schema.get("properties", {})
+            for prop_name, prop_schema in props.items():
+                fields.extend(self._find_high_cardinality_fields(prop_schema, current_path + [prop_name]))
+                
+        return fields
+
+    def _mutate_nested_value(self, doc: Any, path: List[str], schema: Dict[str, Any]) -> None:
+        """Mutates a nested field value along a specified key path."""
+        if not isinstance(doc, dict):
+            return
+        
+        if len(path) == 1:
+            key = path[0]
+            if key in doc:
+                doc[key] = self._generate_unique_value(doc[key], schema)
+            return
+            
+        key = path[0]
+        if key in doc and isinstance(doc[key], dict):
+            self._mutate_nested_value(doc[key], path[1:], schema)
+
+    def _generate_unique_value(self, current_value: Any, schema: Dict[str, Any]) -> Any:
+        """Generates a new, unique value based on the field schema and current value type."""
+        bson_type = schema.get("bsonType")
+        if bson_type == "objectId":
+            return ObjectId()
+        elif bson_type == "date":
+            return datetime.utcnow()
+        elif bson_type == "timestamp":
+            from bson.timestamp import Timestamp
+            import time
+            import random
+            sys_rand = random.SystemRandom()
+            return Timestamp(int(time.time()) + sys_rand.randint(1, 1000), sys_rand.randint(1, 100))
+        elif bson_type == "regex":
+            from bson.regex import Regex
+            import uuid
+            return Regex(f"^pattern_{uuid.uuid4().hex[:6]}_{uuid.uuid4().hex[:6]}$")
+        elif bson_type == "decimal":
+            import random
+            sys_rand = random.SystemRandom()
+            return Decimal128(f"{sys_rand.randint(-1000, 1000)}.{sys_rand.randint(10, 99)}")
+        elif bson_type == "binData":
+            import os
+            return Binary(os.urandom(16))
+        elif bson_type == "double":
+            import random
+            sys_rand = random.SystemRandom()
+            return float(sys_rand.uniform(-1000.0, 1000.0))
+        elif bson_type == "long":
+            from bson.int64 import Int64
+            import random
+            sys_rand = random.SystemRandom()
+            return Int64(sys_rand.randint(-9223372036854775808, 9223372036854775807))
+        
+        fmt = schema.get("format")
+        if fmt in ("uuid", "uuid4"):
+            import uuid
+            return str(uuid.uuid4())
+        
+        # Fallback type-based mutations to ensure uniqueness
+        if isinstance(current_value, str):
+            import uuid
+            if len(current_value) == 36 and current_value.count("-") == 4:
+                return str(uuid.uuid4())
+            suffix = f"_{uuid.uuid4().hex[:6]}"
+            max_len = schema.get("maxLength")
+            if max_len is not None:
+                base = current_value[:max_len - len(suffix)]
+                return base + suffix
+            return current_value + suffix
+            
+        elif isinstance(current_value, int) and not isinstance(current_value, bool):
+            import random
+            sys_rand = random.SystemRandom()
+            val = current_value + sys_rand.randint(1, 10000)
+            max_val = schema.get("maximum")
+            if max_val is not None and val > max_val:
+                min_val = schema.get("minimum", 0)
+                val = sys_rand.randint(min_val, max_val)
+            return val
+            
+        elif isinstance(current_value, float):
+            import random
+            sys_rand = random.SystemRandom()
+            val = current_value + sys_rand.uniform(0.1, 100.0)
+            max_val = schema.get("maximum")
+            if max_val is not None and val > max_val:
+                min_val = schema.get("minimum", 0.0)
+                val = sys_rand.uniform(min_val, max_val)
+            return val
+            
+        elif isinstance(current_value, ObjectId):
+            return ObjectId()
+            
+        elif isinstance(current_value, datetime):
+            import datetime as dt
+            import random
+            return current_value + dt.timedelta(seconds=random.randint(1, 60))
+            
+        elif isinstance(current_value, Decimal128):
+            import random
+            return Decimal128(f"{random.randint(10, 99)}.{random.randint(10, 99)}")
+            
+        elif isinstance(current_value, Binary):
+            import uuid
+            return Binary(uuid.uuid4().bytes)
+            
+        return current_value
 
     def apply_distribution_profile(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Applies statistical distribution profiles to a batch of documents."""
@@ -129,16 +259,68 @@ class BaseGenerator(ABC):
                     return self.apply_bson_translation(doc, branch)
             schema = {}
 
+        # Check standard unique/high-cardinality formats and custom annotations during translation
+        fmt = schema.get("format")
+        if fmt in ("uuid", "uuid4"):
+            import uuid
+            return str(uuid.uuid4())
+
+        if schema.get("unique") or schema.get("uniqueItems") or schema.get("cardinality") in ("high", "unique"):
+            return self._generate_unique_value(doc, schema)
+
         bson_type = schema.get("bsonType")
         if bson_type:
             if bson_type == "objectId":
                 return ObjectId()
             elif bson_type == "date":
+                if isinstance(doc, datetime):
+                    return doc
+                elif isinstance(doc, (int, float)):
+                    try:
+                        return datetime.utcfromtimestamp(doc)
+                    except Exception:
+                        pass
                 return datetime.utcnow()
             elif bson_type == "decimal":
-                return Decimal128("3.14")
+                if isinstance(doc, (int, float)):
+                    return Decimal128(str(doc))
+                elif isinstance(doc, str):
+                    try:
+                        return Decimal128(doc)
+                    except Exception:
+                        pass
+                import random
+                return Decimal128(f"{random.randint(-1000, 1000)}.{random.randint(0, 99)}")
             elif bson_type == "binData":
-                return Binary(b"fake_binary_data")
+                if isinstance(doc, bytes):
+                    return Binary(doc)
+                elif isinstance(doc, str):
+                    return Binary(doc.encode("utf-8"))
+                import os
+                return Binary(os.urandom(16))
+            elif bson_type == "double":
+                if isinstance(doc, (int, float)):
+                    return float(doc)
+                import random
+                return float(random.uniform(-1000.0, 1000.0))
+            elif bson_type == "long":
+                from bson.int64 import Int64
+                if isinstance(doc, (int, float)):
+                    return Int64(int(doc))
+                import random
+                return Int64(random.randint(-9223372036854775808, 9223372036854775807))
+            elif bson_type == "timestamp":
+                from bson.timestamp import Timestamp
+                import time
+                if isinstance(doc, (int, float)):
+                    clamped_time = max(0, min(int(doc), 4294967295))
+                    return Timestamp(clamped_time, 1)
+                return Timestamp(int(time.time()), 1)
+            elif bson_type == "regex":
+                from bson.regex import Regex
+                if isinstance(doc, str):
+                    return Regex(doc)
+                return Regex("^fake_pattern_[0-9]+$")
 
         # Aggressive key sanitization
         if isinstance(doc, dict):

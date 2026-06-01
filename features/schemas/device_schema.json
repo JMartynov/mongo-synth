@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "_id": {
+      "type": "string",
+      "bsonType": "objectId"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "online",
+        "offline"
+      ]
+    }
+  },
+  "required": [
+    "_id",
+    "status"
+  ]
+}
