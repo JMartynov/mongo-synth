@@ -30,4 +30,5 @@ test = [
     "behave>=1.2.6",
     "docker>=6.1.0",
     "jsonsubschema>=0.0.7",
+    "pytest>=7.0.0",
 ]
