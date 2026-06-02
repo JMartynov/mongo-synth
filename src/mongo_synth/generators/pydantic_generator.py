@@ -10,6 +10,9 @@ class PydanticGenerator(BaseGenerator):
             model = self._load_model_by_path(model_path)
             
         if not model:
+            if "schema" in blueprint:
+                super().__init__(blueprint, documents_per_collection, seed=seed)
+                return
             raise ValueError("PydanticGenerator requires 'model' or 'model_path' in the blueprint.")
             
         schema = self._translate_pydantic_to_schema(model)

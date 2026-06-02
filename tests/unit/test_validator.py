@@ -202,7 +202,11 @@ def test_subschema_validator():
     Test SubschemaValidator logic checking if inferred schema is a subschema
     of ground truth schema.
     """
-    from mongo_synth.validation.validator import SubschemaValidator
+    import pytest
+    from mongo_synth.validation.validator import SubschemaValidator, isSubschema
+    if isSubschema is None:
+        pytest.skip("jsonsubschema library not installed")
+        
     validator = SubschemaValidator()
 
     # Case 1: Inferred schema is identical to ground truth (subschema should be True)

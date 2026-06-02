@@ -383,3 +383,27 @@ def test_cli_validate_failure():
             os.unlink(f_gt.name)
             os.unlink(f_inf.name)
 
+
+def test_anomaly_generator_non_dict_fallback():
+    """
+    Tests that AnomalyGenerator correctly falls back to an empty dictionary
+    and injects anomalies when the input document generated is not a dictionary (e.g. primitive/None).
+    """
+    blueprint = {
+        "schema": {
+            "type": "string",  # Primitive type schema
+            "anomaly_type": "whitespace_keys"
+        },
+        "metadata": {
+            "expected_document_count": 1
+        }
+    }
+    generator = AnomalyGenerator(blueprint, documents_per_collection=1)
+    
+    batch = generator.generate_batch()
+    assert len(batch) == 1
+    doc = batch[0]
+    assert isinstance(doc, dict)
+    assert "   " in doc and "\t" in doc
+
+

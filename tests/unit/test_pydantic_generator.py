@@ -110,3 +110,25 @@ def test_pydantic_generator_legacy_v1_support():
             "legacy_field": {"type": "string"}
         }
     }
+
+
+def test_pydantic_generator_with_existing_schema():
+    """Verify that PydanticGenerator accepts pre-serialized schema directly."""
+    blueprint = {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "direct_field": {"type": "string"}
+            },
+            "required": ["direct_field"]
+        },
+        "metadata": {
+            "expected_document_count": 2
+        }
+    }
+    generator = PydanticGenerator(blueprint, documents_per_collection=2)
+    assert generator.schema == blueprint["schema"]
+    batch = generator.generate_batch()
+    assert len(batch) == 2
+    assert "direct_field" in batch[0]
+

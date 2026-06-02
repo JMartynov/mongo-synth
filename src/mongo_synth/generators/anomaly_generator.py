@@ -27,7 +27,7 @@ class AnomalyGenerator(BaseGenerator):
 
     def _inject_anomaly_to_doc(self, doc: Dict[str, Any], anomaly_type: str) -> Dict[str, Any]:
         if not isinstance(doc, dict):
-            return doc
+            doc = {}
 
         if anomaly_type == "whitespace_keys":
             doc["   "] = self.faker.word()
