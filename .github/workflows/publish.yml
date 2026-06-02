@@ -79,7 +79,7 @@ jobs:
       id-token: write  # Critical for OIDC Trusted Publishing
 
     environment:
-      name: release
+      name: pipit
       url: https://pypi.org/p/mongo-synth
 
     steps:
