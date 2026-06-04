@@ -94,7 +94,8 @@ def test_standalone_cli_parser():
              mock_coll,
              "mongodb://localhost:27017",
              batch_size=5,
-             live_source_uri=""
+             live_source_uri="",
+             ordered=False
          )
 
 def test_schema_aware_replication_mutations():

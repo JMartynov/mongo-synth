@@ -178,6 +178,7 @@ def step_impl_attempt_live_ingest(context):
         context.security_error_message = str(e)
 
 @then('the target collection should contain exactly {count:d} documents')
+@then('the target collection should contain exactly {count:d} document')
 def step_impl_check_count(context, count):
     db = context.mongo_client["test_db"]
     collection = db["test_collection"]
@@ -226,3 +227,77 @@ def step_impl_verify_empty(context):
     collection = db["test_collection"]
     actual_count = collection.count_documents({})
     assert actual_count == 0, f"Expected 0 documents in target collection, got {actual_count}"
+
+@when('I run the mongo-synth tool with dry-run mode for {count:d} documents')
+def step_impl_run_dry_run(context, count):
+    import subprocess
+    cmd = [
+        ".venv/bin/python", "-m", "mongo_synth.cli", "generate",
+        "--schema", context.schema_path,
+        "--count", str(count),
+        "--dry-run"
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    context.cli_returncode = res.returncode
+    context.cli_stdout = res.stdout
+    context.cli_stderr = res.stderr
+
+@then('the operation must succeed executing only client-side validation')
+def step_impl_dry_run_success(context):
+    assert context.cli_returncode == 0, f"Expected exit code 0 but got {context.cli_returncode}. Stdout: {context.cli_stdout}, Stderr: {context.cli_stderr}"
+    assert "Dry run complete" in context.cli_stdout or "Dry-run mode enabled" in context.cli_stdout
+
+@when('I attempt to bulk insert with ordered set to true a list of duplicate documents:')
+def step_impl_ordered_insert_duplicates(context):
+    documents = json.loads(context.text)
+    db = context.mongo_client["test_db"]
+    collection = db["test_collection"]
+    collection.delete_many({})
+    
+    from pymongo.errors import BulkWriteError
+    context.bulk_write_error_raised = False
+    
+    # We set ordered=True to halt insertion on duplicate violation
+    ingester = DataIngester(collection, context.mongo_uri, batch_size=1000, ordered=True)
+    try:
+        ingester.ingest(documents)
+    except BulkWriteError as e:
+        context.bulk_write_error_raised = True
+        context.bulk_write_error = e
+
+@then('the ingestion operation must fail with a bulk write error')
+def step_impl_check_bulk_write_error(context):
+    assert getattr(context, "bulk_write_error_raised", False), "Expected BulkWriteError but none was raised"
+
+@when('I run the mongo-synth tool to generate and ingest {count:d} documents with {workers:d} workers')
+def step_impl_run_parallel_ingest(context, count, workers):
+    import subprocess
+    cmd = [
+        ".venv/bin/python", "-m", "mongo_synth.cli", "generate",
+        "--schema", context.schema_path,
+        "--uri", context.mongo_uri,
+        "--db", "test_db",
+        "--collection", "test_collection",
+        "--count", str(count),
+        "--workers", str(workers)
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    context.cli_returncode = res.returncode
+    context.cli_stdout = res.stdout
+    context.cli_stderr = res.stderr
+
+@when('I run the mongo-synth tool with dry-run mode and {workers:d} workers for {count:d} documents')
+def step_impl_run_parallel_dry_run(context, workers, count):
+    import subprocess
+    cmd = [
+        ".venv/bin/python", "-m", "mongo_synth.cli", "generate",
+        "--schema", context.schema_path,
+        "--count", str(count),
+        "--workers", str(workers),
+        "--dry-run"
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    context.cli_returncode = res.returncode
+    context.cli_stdout = res.stdout
+    context.cli_stderr = res.stderr
+

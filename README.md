@@ -177,12 +177,29 @@ Example `verifier_checklist.json`:
   }
 ]
 ```
-### Ingestion Robustness & Unique Indexes
-When generating and inserting millions of mock documents, duplicate key collisions can occur on unique database indexes (like email or username). 
+### Ingestion Robustness, Safety & Performance Options
 
+When generating and inserting millions of mock documents, several database-level constraints, schema constraints, and payload limits must be handled safely:
 
+1. **Ordered Ingestion (`--ordered`)**:
+   By default, `mongo-synth` performs unordered bulk writes (`ordered=False`) to maximize write speed and ignore duplicate key violations (MongoDB error codes `11000`/`11001`) dynamically. 
+   If you require sequential database insertions where the exact order of documents matters (e.g., time-series data or referenced keys), use the `--ordered` flag. This will enforce sequential inserts and immediately halt execution on the first error.
 
-To prevent ingestion from failing the entire run, the `mongo-synth` ingestion pipeline handles `BulkWriteError` gracefully. It **selectively ignores duplicate key violations** (MongoDB error codes `11000` and `11001`), logging warnings and continuing, while still correctly reporting the total count of written records. 
+2. **Client-Side Schema Validation Dry Run (`--dry-run`)**:
+   Under large-scale runs, sending invalid BSON structures or documents that violate schema constraints to MongoDB is slow and requires manual database cleanup. 
+   Use the `--dry-run` flag to generate mock documents and run the JSON Schema validator locally client-side using `jsonschema` without connecting or writing to MongoDB.
+
+3. **Dynamic Batch Resizing (Network Safeties)**:
+   By default, `mongo-synth` bulk-inserts documents in batch size chunks (default `5000`). If your schema generates extremely large records (e.g., deeply nested subdocuments, large arrays, or long texts), a large batch can exceed MongoDB's maximum 16MB BSON payload limit.
+   The ingestion pipeline automatically samples the BSON size of generated documents during initial ingestion and dynamically scales down the batch size if needed to fit under a safe 12MB limit.
+
+4. **Parallel Ingestion Workers (`--workers`)**:
+   Python's single-threaded execution can limit both CPU generation throughput and I/O write speed. 
+   Use the `--workers W` flag (with `W > 1`) to generate and ingest documents concurrently in `W` isolated processes. When running in parallel:
+   * The total count is split evenly across workers.
+   * If a master seed is provided, seeds are offset (`master_seed + worker_index`) to guarantee that workers generate distinct datasets.
+   * Target collection clearing (`--clear`) is coordinated once by the parent process.
+   * Leak verifiers are collected and merged across all workers.
 
 Any structural errors (such as MongoDB Schema Document Validation failures, error code `121`) are **re-raised immediately** to prevent silent configuration or constraint validation bugs.
 

@@ -88,7 +88,7 @@ class DataIngester:
     Includes safety constraints to prevent operations against live production URIs.
     """
 
-    def __init__(self, target_collection: Collection, target_uri: str, batch_size: Optional[int] = None, live_source_uri: Optional[str] = None):
+    def __init__(self, target_collection: Collection, target_uri: str, batch_size: Optional[int] = None, live_source_uri: Optional[str] = None, ordered: bool = False):
         """
         Initializes the DataIngester.
 
@@ -97,9 +97,11 @@ class DataIngester:
             target_uri (str): The connection URI used to create the target collection, verified against the live source URI.
             batch_size (int, optional): Ingest batch size override.
             live_source_uri (str, optional): Connection URI of the production environment to block writes to.
+            ordered (bool): Whether bulk insertions should be ordered (halts on first error).
         """
         self.target_collection = target_collection
         self.target_uri = target_uri
+        self.ordered = ordered
 
         if batch_size is not None:
             self.batch_size = batch_size
@@ -182,9 +184,30 @@ class DataIngester:
         """
         total_inserted = 0
         current_batch = []
+        sampled_docs = []
+        batch_resized = False
 
         for doc in documents:
             current_batch.append(doc)
+
+            if not batch_resized and len(sampled_docs) < 5:
+                sampled_docs.append(doc)
+                if len(sampled_docs) == 5 or len(current_batch) >= self.batch_size:
+                    import bson
+                    sizes = []
+                    for s_doc in sampled_docs:
+                        try:
+                            sizes.append(len(bson.BSON.encode(s_doc)))
+                        except Exception:
+                            pass
+                    if sizes:
+                        avg_size = sum(sizes) / len(sizes)
+                        target_max_bytes = 12 * 1024 * 1024
+                        new_batch_size = max(1, int(target_max_bytes / avg_size))
+                        if new_batch_size < self.batch_size:
+                            logger.info(f"Dynamically resizing bulk batch size from {self.batch_size} to {new_batch_size} (avg doc size = {avg_size:.1f} bytes)")
+                            self.batch_size = new_batch_size
+                    batch_resized = True
 
             if len(current_batch) >= self.batch_size:
                 inserted = self._insert_batch(list(current_batch))
@@ -201,15 +224,20 @@ class DataIngester:
     def _insert_batch(self, batch: list) -> int:
         """
         Helper method to insert a batch of documents into the collection.
-        Uses ordered=False to maximize insertion speed and prevent a single error from halting the entire batch.
+        Uses ordered insertion if self.ordered is True.
         """
         from pymongo.errors import BulkWriteError
         try:
-            res = self.target_collection.insert_many(batch, ordered=False)
+            res = self.target_collection.insert_many(batch, ordered=self.ordered)
             if hasattr(res, "inserted_ids") and isinstance(res.inserted_ids, list):
                 return len(res.inserted_ids)
             return len(batch)
         except BulkWriteError as bwe:
+            # Halts on first error if ordered=True
+            if self.ordered:
+                logger.error(f"Ordered bulk write error occurred: {bwe}")
+                raise
+
             # Re-raise if there are errors other than duplicate key violations (11000/11001)
             other_errors = [
                 err for err in bwe.details.get("writeErrors", [])
