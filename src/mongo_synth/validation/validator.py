@@ -33,7 +33,7 @@ class SchemaValidatorInterface:
                              "minItems", "maxItems", "minLength", "maxLength", "pattern", 
                              "uniqueItems", "multipleOf", "exclusiveMinimum", "exclusiveMaximum",
                              "minimum", "maximum", "readOnly", "writeOnly", "contentEncoding", 
-                             "contentMediaType", "bsonType"]
+                             "contentMediaType", "bsonType", "sensitiveType", "sensitive_locale"]
             
             for k, v in schema.items():
                 if k in ignore_fields:
@@ -236,7 +236,7 @@ class SubschemaValidator(SchemaValidatorInterface):
             if not isinstance(s, dict):
                 return s
                 
-            ignore = ["bsonType", "anomaly_type", "title", "description", "required", "default", "examples"]
+            ignore = ["bsonType", "anomaly_type", "title", "description", "required", "default", "examples", "sensitiveType", "sensitive_locale"]
             res = {k: clean_schema(v, force_closed) for k, v in s.items() if k not in ignore}
             
             if "required" in res: del res["required"]

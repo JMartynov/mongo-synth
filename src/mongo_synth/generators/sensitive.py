@@ -5,7 +5,12 @@ from faker import Faker
 
 class SensitiveDataTracker:
     def __init__(self, run_id: Optional[str] = None, seed: Optional[Any] = None, locale: Optional[str] = None):
-        self.faker = Faker(locale) if locale else Faker()
+        import logging
+        try:
+            self.faker = Faker(locale) if locale else Faker()
+        except Exception:
+            logging.getLogger(__name__).warning(f"Invalid sensitive locale '{locale}' specified. Falling back to default locale.")
+            self.faker = Faker()
         if seed is not None:
             self.faker.seed_instance(seed)
         self.verifiers: List[Dict[str, str]] = []

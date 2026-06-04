@@ -132,3 +132,33 @@ def test_pydantic_generator_with_existing_schema():
     assert len(batch) == 2
     assert "direct_field" in batch[0]
 
+
+def test_pydantic_sensitive_type():
+    """Verify Pydantic models containing json_schema_extra sensitive annotations generate properly."""
+    class SensitiveModel(BaseModel):
+        email: str = Field(description="User email", json_schema_extra={"sensitiveType": "email"})
+        ssn: str = Field(description="SSN", json_schema_extra={"sensitiveType": "ssn"})
+        regular_field: str = Field(description="Normal string")
+
+    blueprint = {
+        "model": SensitiveModel,
+        "metadata": {
+            "expected_document_count": 3
+        }
+    }
+    
+    generator = PydanticGenerator(blueprint, documents_per_collection=3, seed=42)
+    assert generator.schema is not None
+    assert "email" in generator.schema["properties"]
+    assert generator.schema["properties"]["email"].get("sensitiveType") == "email"
+    assert generator.schema["properties"]["ssn"].get("sensitiveType") == "ssn"
+
+    batch = generator.generate_batch()
+    assert len(batch) == 3
+    for doc in batch:
+        assert isinstance(doc["email"], str)
+        assert "@" in doc["email"]
+        assert doc["ssn"] is not None
+        assert isinstance(doc["ssn"], str)
+
+

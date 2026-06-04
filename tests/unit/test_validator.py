@@ -227,3 +227,41 @@ def test_subschema_validator():
     ground_truth_schema = {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": False}
     res = validator.validate(inferred_schema, ground_truth_schema)
     assert res["valid"] is False
+
+def test_validator_ignores_sensitive_metadata():
+    """
+    Test that StructuralValidator and SubschemaValidator ignore "sensitiveType"
+    and "sensitive_locale" during normalization and cleaning, so they don't cause validation failures.
+    """
+    # 1. StructuralValidator test
+    struct_validator = StructuralValidator()
+    # Inferred schema has sensitiveType and sensitive_locale metadata, ground truth does not.
+    # Because structural validator ignores these fields during normalization, it should evaluate them as identical.
+    inferred_schema = {
+        "type": "object",
+        "properties": {
+            "user_email": {
+                "type": "string",
+                "sensitiveType": "email",
+                "sensitive_locale": "en_US"
+            }
+        }
+    }
+    ground_truth_schema = {
+        "type": "object",
+        "properties": {
+            "user_email": {
+                "type": "string"
+            }
+        }
+    }
+    res_struct = struct_validator.validate(inferred_schema, ground_truth_schema)
+    assert res_struct["valid"] is True
+
+    # 2. SubschemaValidator test
+    from mongo_synth.validation.validator import SubschemaValidator, isSubschema
+    if isSubschema is not None:
+        sub_validator = SubschemaValidator()
+        res_sub = sub_validator.validate(inferred_schema, ground_truth_schema)
+        assert res_sub["valid"] is True
+
