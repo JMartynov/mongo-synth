@@ -407,3 +407,130 @@ def test_anomaly_generator_non_dict_fallback():
     assert "   " in doc and "\t" in doc
 
 
+def test_schema_sensitive_type():
+    blueprint = {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "user_email": {"type": "string", "sensitiveType": "email"},
+                "user_pass": {"type": "string", "sensitiveType": "password"}
+            },
+            "required": ["user_email", "user_pass"]
+        },
+        "metadata": {
+            "run_id": "cli_canary"
+        }
+    }
+    generator = JsonSchemaGenerator(blueprint, documents_per_collection=3)
+    
+    # Force replication to ensure unique mutation logic runs
+    with patch("mongo_synth.generators.base.min", return_value=1):
+        batch = generator.generate_batch()
+
+    assert len(batch) == 3
+    emails = [d["user_email"] for d in batch]
+    passwords = [d["user_pass"] for d in batch]
+    
+    # Check that they are generated, unique, and contain the prefix
+    assert len(set(emails)) == 3
+    assert len(set(passwords)) == 3
+    for email in emails:
+        assert email.startswith("cli_canary_")
+    for password in passwords:
+        assert password.startswith("cli_canary_")
+
+    # Check verifiers are tracked
+    assert len(generator.sensitive_tracker.verifiers) == 6
+
+
+def test_cli_sensitive_data_options():
+    from mongo_synth.cli import main
+    import tempfile
+    import os
+
+    mock_schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"}
+        }
+    }
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f_schema, \
+         tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f_verifier:
+        
+        f_schema.write(json.dumps(mock_schema).encode('utf-8'))
+        f_schema.close()
+        f_verifier.close()
+
+        try:
+            test_args = [
+                "cli.py",
+                "generate",
+                "--schema", f_schema.name,
+                "--uri", "mongodb://localhost:27017",
+                "--db", "cli_test_db",
+                "--collection", "cli_test_coll",
+                "--count", "2",
+                "--inject-sensitive",
+                "--run-id", "test_canary",
+                "--verifier-output", f_verifier.name
+            ]
+
+            with patch("sys.argv", test_args), \
+                 patch("mongo_synth.cli.MongoClient") as mock_client, \
+                 patch("mongo_synth.cli.DataIngester") as mock_ingester:
+
+                mock_db = MagicMock()
+                mock_coll = MagicMock()
+                mock_client.return_value.__getitem__.return_value = mock_db
+                mock_db.__getitem__.return_value = mock_coll
+
+                mock_ingester_instance = mock_ingester.return_value
+                mock_ingester_instance.ingest.return_value = 2
+
+                main()
+
+                # Read output verifiers file
+                with open(f_verifier.name, "r") as f:
+                    verifiers = json.load(f)
+
+                # Auto inject adds 8 sensitive values per document. 2 docs * 8 = 16 values.
+                assert len(verifiers) == 16
+                for v in verifiers:
+                    assert "type" in v
+                    assert "value" in v
+                    # Check prefixing where applicable
+                    if v["type"] in ["email", "name", "password"]:
+                        assert "test_canary" in v["value"]
+
+        finally:
+            os.unlink(f_schema.name)
+            os.unlink(f_verifier.name)
+
+
+def test_data_ingester_bulk_write_error_handling():
+    from pymongo.errors import BulkWriteError
+    
+    mock_collection = MagicMock()
+    # Mock insert_many to raise BulkWriteError
+    bwe = BulkWriteError({"nInserted": 4, "writeErrors": [{"index": 4, "errmsg": "duplicate key", "code": 11000}]})
+    mock_collection.insert_many.side_effect = bwe
+
+    ingester = DataIngester(
+        target_collection=mock_collection,
+        target_uri="mongodb://localhost:27017"
+    )
+
+    batch = [{"_id": i} for i in range(5)]
+    inserted = ingester._insert_batch(batch)
+
+    # Returns nInserted from bwe.details instead of raising error
+    assert inserted == 4
+
+    # Other exceptions should still be raised
+    mock_collection.insert_many.side_effect = ValueError("Catastrophic error")
+    with pytest.raises(ValueError, match="Catastrophic error"):
+        ingester._insert_batch(batch)
+
+
+

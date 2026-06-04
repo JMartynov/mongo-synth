@@ -71,6 +71,8 @@ def run_generation(args, parser):
     if "metadata" not in blueprint:
         blueprint["metadata"] = {}
     blueprint["metadata"]["expected_document_count"] = count
+    blueprint["metadata"]["inject_sensitive"] = getattr(args, "inject_sensitive", False)
+    blueprint["metadata"]["run_id"] = getattr(args, "run_id", None)
 
     # 4. Instantiate Generator
     if args.model:
@@ -97,6 +99,19 @@ def run_generation(args, parser):
     except Exception as e:
         logger.error(f"Failed to generate documents: {e}", exc_info=True)
         sys.exit(1)
+
+    # Export verifier list
+    if getattr(args, "verifier_output", None):
+        tracker = getattr(generator, "sensitive_tracker", None)
+        if tracker:
+            logger.info(f"Writing {len(tracker.verifiers)} verifiers to {args.verifier_output}...")
+            try:
+                with open(args.verifier_output, "w") as f:
+                    json.dump(tracker.verifiers, f, indent=2)
+                logger.info("Verifier list written successfully.")
+            except Exception as e:
+                logger.error(f"Failed to write verifier file: {e}")
+                sys.exit(1)
 
     # 6. MongoDB Ingestion Setup
     logger.info(f"Connecting to MongoDB at {uri}...")
@@ -216,6 +231,9 @@ def main():
     gen_parser.add_argument("--profile", help="Path to a JSON file containing statistical probability profiles")
     gen_parser.add_argument("--anomaly", help="Inject a specific structural/type anomaly")
     gen_parser.add_argument("--clear", action="store_true", help="Clear the target collection before insertion")
+    gen_parser.add_argument("--inject-sensitive", action="store_true", help="Automatically inject sensitive PII/secrets fields into all documents")
+    gen_parser.add_argument("--verifier-output", help="Path to write the JSON leak verifier list file")
+    gen_parser.add_argument("--run-id", help="Canary run identifier to prefix/salt sensitive values with")
     gen_parser.add_argument("--live-uri", help="Live URI to check safety lock against")
     gen_parser.add_argument("--config-file", help="Path to a YAML configuration file to pre-populate parameters")
     gen_parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")

@@ -187,24 +187,36 @@ class DataIngester:
             current_batch.append(doc)
 
             if len(current_batch) >= self.batch_size:
-                self._insert_batch(list(current_batch))
-                total_inserted += len(current_batch)
+                inserted = self._insert_batch(list(current_batch))
+                total_inserted += inserted
                 current_batch.clear()
 
         # Insert any remaining documents
         if current_batch:
-            self._insert_batch(list(current_batch))
-            total_inserted += len(current_batch)
+            inserted = self._insert_batch(list(current_batch))
+            total_inserted += inserted
 
         return total_inserted
 
-    def _insert_batch(self, batch: list) -> None:
+    def _insert_batch(self, batch: list) -> int:
         """
         Helper method to insert a batch of documents into the collection.
         Uses ordered=False to maximize insertion speed and prevent a single error from halting the entire batch.
         """
+        from pymongo.errors import BulkWriteError
         try:
-            self.target_collection.insert_many(batch, ordered=False)
+            res = self.target_collection.insert_many(batch, ordered=False)
+            if hasattr(res, "inserted_ids") and isinstance(res.inserted_ids, list):
+                return len(res.inserted_ids)
+            return len(batch)
+        except BulkWriteError as bwe:
+            n_inserted = bwe.details.get("nInserted", 0)
+            logger.warning(
+                f"Gracefully handled bulk write error during ingestion. "
+                f"Successfully inserted {n_inserted} of {len(batch)} documents in this batch. "
+                f"Errors: {len(bwe.details.get('writeErrors', []))}"
+            )
+            return n_inserted
         except Exception as e:
             logger.error(f"Error occurred during batch insertion: {e}")
             raise

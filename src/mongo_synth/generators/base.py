@@ -9,6 +9,7 @@ from bson.binary import Binary
 from datetime import datetime
 import random
 import string
+from mongo_synth.generators.sensitive import SensitiveDataTracker
 
 class BaseGenerator(ABC):
     def __init__(self, blueprint: Dict[str, Any], documents_per_collection: int, seed: Any = None):
@@ -17,6 +18,9 @@ class BaseGenerator(ABC):
         self.metadata = blueprint.get("metadata", {})
         self.documents_per_collection = documents_per_collection
         self.seed = seed
+        
+        run_id = self.metadata.get("run_id")
+        self.sensitive_tracker = SensitiveDataTracker(run_id=run_id)
 
     @staticmethod
     def _disable_additional_properties(s: Any) -> None:
@@ -79,6 +83,11 @@ class BaseGenerator(ABC):
 
         # Apply distribution profile to the batch
         batch = self.apply_distribution_profile(batch)
+
+        # Auto-inject sensitive PII if enabled
+        if self.metadata.get("inject_sensitive", False):
+            batch = [self.sensitive_tracker.auto_inject(doc) for doc in batch]
+
         return batch
 
     def _find_high_cardinality_fields(self, schema: Dict[str, Any], current_path: List[str] = None) -> List[Tuple[List[str], Dict[str, Any]]]:
@@ -110,6 +119,10 @@ class BaseGenerator(ABC):
         if bson_type in ("objectId", "date", "timestamp", "regex", "decimal", "binData"):
             is_unique = True
             
+        # 5. sensitiveType annotations should be treated as unique/high-cardinality
+        if schema.get("sensitiveType"):
+            is_unique = True
+            
         if is_unique and current_path:
             fields.append((current_path, schema))
             
@@ -138,6 +151,10 @@ class BaseGenerator(ABC):
 
     def _generate_unique_value(self, current_value: Any, schema: Dict[str, Any]) -> Any:
         """Generates a new, unique value based on the field schema and current value type."""
+        sensitive_type = schema.get("sensitiveType")
+        if sensitive_type:
+            return self.sensitive_tracker.generate_value(sensitive_type)
+
         bson_type = schema.get("bsonType")
         if bson_type == "objectId":
             return ObjectId()
@@ -241,6 +258,10 @@ class BaseGenerator(ABC):
         """Recursively translates standard generated types into native BSON types and sanitizes for MongoDB."""
         if not isinstance(schema, dict):
             schema = {}
+            
+        sensitive_type = schema.get("sensitiveType")
+        if sensitive_type:
+            return self.sensitive_tracker.generate_value(sensitive_type)
             
         # Handle Polymorphism
         if "anyOf" in schema or "oneOf" in schema:

@@ -85,3 +85,93 @@ ingester = DataIngester(
 inserted_count = ingester.ingest(documents)
 print(f"Successfully seeded {inserted_count} documents.")
 ```
+
+---
+
+## 🔒 Sensitive Data Generation & Honeytoken Leak Verification
+
+`mongo-synth` supports generating dynamic, high-fidelity Personally Identifiable Information (PII) and credentials (passwords, API keys) that can be seeded into MongoDB collections.
+
+This feature is **disabled by default** to ensure clean testing, but can be enabled on-demand.
+
+### Why this feature exists
+Organizations need to periodically audit their staging, development, and production environments for compliance (GDPR, HIPAA, PCI-DSS) and security leaks. Rather than using real production data (which introduces security risks and privacy compliance violations), security teams utilize **Honeytokens**—realistic, synthetic records that act as tripwires. 
+
+If any of the generated honeytoken values (like an API key or password) are detected in system logs, external search indexing engines, code repositories, or public paste sites, it serves as a high-confidence indicator of a data breach.
+
+### Real-World Customer Use Cases
+*   **Compliance Audit & Data Redaction**: Verify that system logging frameworks, crash reporting tools, or APMs (Application Performance Monitors) correctly redact or mask sensitive PII (like Social Security Numbers or Credit Cards) before storing them in logs.
+*   **Leak Detection & Alerting (Honeytokens)**: Seed databases with custom API keys and passwords. Configure downstream monitoring tools (like SIEMs, Splunk, or DLP scanners) to watch for these exact values. If a value appears outside the database, alert security teams immediately.
+*   **Accidental Production Writes Identification**: Use the `--run-id` option to prefix all sensitive values. If a value prefix is seen in logs, you can identify exactly which pipeline run or branch was responsible.
+*   **Unique Index Integrity Testing**: Test that database index behaviors, constraints, and ingestion pipelines handle large volumes of high-cardinality values with graceful bulk writes.
+
+### How to Use
+
+#### 1. Schema-Driven Generation
+Annotate any string properties in your JSON Schema with `"sensitiveType"`:
+*   Supported types: `name`, `email`, `phone`, `ssn`, `credit_card`, `address`, `password`, `api_key`.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "username": {"type": "string"},
+    "personal_email": {"type": "string", "sensitiveType": "email"},
+    "api_token": {"type": "string", "sensitiveType": "api_key"}
+  },
+  "required": ["username", "personal_email", "api_token"]
+}
+```
+
+When generating, these fields will be populated using standard libraries (Faker for PII, cryptographically secure `secrets` module for credentials).
+
+#### 2. Automatic CLI-Driven Injection (`--inject-sensitive`)
+To automatically append a set of standard sensitive fields (including nested `personal_info`, `billing`, and `credentials` sub-documents) to every document generated, use the `--inject-sensitive` flag:
+```bash
+mongo-synth generate \
+  --schema path/to/schema.json \
+  --count 1000 \
+  --inject-sensitive
+```
+
+#### 3. Canary Run Tagging (`--run-id`)
+Prefix generated values with a custom ID (e.g., pipeline run number or environment name) to trace the origin of a leak:
+```bash
+mongo-synth generate \
+  --schema path/to/schema.json \
+  --count 1000 \
+  --inject-sensitive \
+  --run-id dev_stage_pipeline_94
+```
+This prefixes names, emails, and passwords with `dev_stage_pipeline_94_` and salts API keys like `key_live_dev_stage_pipeline_94_...`.
+
+#### 4. Leak Verifiers Export (`--verifier-output`)
+Export the list of all generated sensitive values to a structured JSON file to act as the leak audit checklist:
+```bash
+mongo-synth generate \
+  --schema path/to/schema.json \
+  --count 100 \
+  --inject-sensitive \
+  --run-id audit_run_1 \
+  --verifier-output verifier_checklist.json
+```
+Example `verifier_checklist.json`:
+```json
+[
+  {
+    "type": "email",
+    "value": "audit_run_1_john.doe@example.com"
+  },
+  {
+    "type": "api_key",
+    "value": "key_live_audit_run_1_f8b2c4d9a..."
+  }
+]
+```
+
+### Ingestion Robustness & Unique Indexes
+When generating and inserting millions of mock documents, duplicate key collisions can occur on unique database indexes (like email or username). 
+
+To prevent ingestion from failing the entire run, the `mongo-synth` ingestion pipeline handles `BulkWriteError` gracefully. It logs warnings for duplicate keys while successfully inserting other non-colliding records, reporting the correct total count of written records.
+
+```
