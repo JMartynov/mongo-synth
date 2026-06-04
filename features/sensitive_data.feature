@@ -62,35 +62,4 @@ Feature: MongoDB Synthetic Sensitive Data Generation & Robust Ingestion
     Then the ingestion should succeed without raising an error
     And the target collection should contain exactly 2 documents
 
-  Scenario: Scan targets for leaks using the verify-leak CLI subcommand
-    Given a verifier list file "features/schemas/temp_verifiers.json" containing:
-      """
-      [
-        {"type": "email", "value": "leak_canary_john@example.com"},
-        {"type": "api_key", "value": "key_live_leak_canary_secret"}
-      ]
-      """
-    And a log file "features/schemas/app_log.txt" with content:
-      """
-      [INFO] Server started
-      [WARN] Unexpected login attempt from IP 1.2.3.4
-      [ERROR] Transaction failed for user leak_canary_john@example.com
-      """
-    When I run the mongo-synth verify-leak tool with verifier file "features/schemas/temp_verifiers.json" and target "features/schemas/app_log.txt"
-    Then the verification operation should fail detecting a leak
-
-  Scenario: Scan clean targets for leaks using the verify-leak CLI subcommand
-    Given a verifier list file "features/schemas/temp_verifiers_clean.json" containing:
-      """
-      [
-        {"type": "email", "value": "leak_canary_john@example.com"}
-      ]
-      """
-    And a log file "features/schemas/clean_app_log.txt" with content:
-      """
-      [INFO] Server started
-      [INFO] User logged in: clean_user@example.com
-      """
-    When I run the mongo-synth verify-leak tool with verifier file "features/schemas/temp_verifiers_clean.json" and target "features/schemas/clean_app_log.txt"
-    Then the verification operation should succeed detecting no leaks
 

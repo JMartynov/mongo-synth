@@ -327,26 +327,4 @@ Update `DataIngester.ingest` to accumulate the actual written count:
         return total_inserted
 ```
 
----
-
-## 6. Leak Scanning CLI Command (`verify-leak`)
-
-To complete the end-to-end audit loop of the honeytoken lifecycle, `mongo-synth` provides a leak scanning tool subcommand (`verify-leak`) to locate leaked sensitive data in files or logs.
-
-### 6.1 Subcommand Options
-The command takes the following arguments:
-*   `--verifier-file`: (Required) Path to the JSON verifiers list exported during generation.
-*   `--target`: (Required) Path to the log file or directory to scan recursively.
-*   `--verbose`: (Optional) Enable verbose logging.
-
-### 6.2 Implementation Details
-The scan performs exact substring lookups on every line of target files:
-```python
-# Exact substring matching per line
-for line_idx, line in enumerate(file_handle, 1):
-    for val, val_type in verifier_map.items():
-        if val in line:
-            register_leak(...)
-```
-If leaks are found, it lists all matching entries (type, value, file, and line number) and exits with exit code `1`. Otherwise, it prints a success message and exits with `0`.
 
