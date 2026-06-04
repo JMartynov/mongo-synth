@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import jsonschema
 from behave import given, when, then
@@ -232,7 +233,7 @@ def step_impl_verify_empty(context):
 def step_impl_run_dry_run(context, count):
     import subprocess
     cmd = [
-        ".venv/bin/python", "-m", "mongo_synth.cli", "generate",
+        sys.executable, "-m", "mongo_synth.cli", "generate",
         "--schema", context.schema_path,
         "--count", str(count),
         "--dry-run"
@@ -273,7 +274,7 @@ def step_impl_check_bulk_write_error(context):
 def step_impl_run_parallel_ingest(context, count, workers):
     import subprocess
     cmd = [
-        ".venv/bin/python", "-m", "mongo_synth.cli", "generate",
+        sys.executable, "-m", "mongo_synth.cli", "generate",
         "--schema", context.schema_path,
         "--uri", context.mongo_uri,
         "--db", "test_db",
@@ -290,7 +291,7 @@ def step_impl_run_parallel_ingest(context, count, workers):
 def step_impl_run_parallel_dry_run(context, workers, count):
     import subprocess
     cmd = [
-        ".venv/bin/python", "-m", "mongo_synth.cli", "generate",
+        sys.executable, "-m", "mongo_synth.cli", "generate",
         "--schema", context.schema_path,
         "--count", str(count),
         "--workers", str(workers),
