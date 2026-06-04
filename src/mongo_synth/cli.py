@@ -216,10 +216,79 @@ def run_validation(args):
             if k not in ["valid", "method"]:
                 print(f"  {k}: {v}")
         sys.exit(1)
+def run_verify_leak(args, parser):
+    import os
+    # 1. Load verifiers file
+    logger.info(f"Loading verifier file: {args.verifier_file}")
+    try:
+        with open(args.verifier_file, "r") as f:
+            verifiers = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to read verifiers file {args.verifier_file}: {e}")
+        sys.exit(1)
+
+    if not isinstance(verifiers, list):
+        logger.error("Verifier file must contain a JSON list of objects.")
+        sys.exit(1)
+
+    # Map value -> type to check leaks efficiently
+    verifier_map = {}
+    for entry in verifiers:
+        if isinstance(entry, dict) and "value" in entry and "type" in entry:
+            verifier_map[str(entry["value"])] = entry["type"]
+
+    if not verifier_map:
+        logger.warning("No verifiers found in the verifier file.")
+        print("No verifiers to scan for.")
+        sys.exit(0)
+
+    # 2. Collect target files
+    target = args.target
+    files_to_scan = []
+    if os.path.isfile(target):
+        files_to_scan.append(target)
+    elif os.path.isdir(target):
+        for root, _, filenames in os.walk(target):
+            for filename in filenames:
+                files_to_scan.append(os.path.join(root, filename))
+    else:
+        logger.error(f"Target path '{target}' is not a valid file or directory.")
+        sys.exit(1)
+
+    # 3. Scan files
+    leaks = []
+    for filepath in files_to_scan:
+        logger.debug(f"Scanning: {filepath}")
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                for line_idx, line in enumerate(f, 1):
+                    for val, val_type in verifier_map.items():
+                        if val in line:
+                            leaks.append({
+                                "file": filepath,
+                                "line": line_idx,
+                                "type": val_type,
+                                "value": val
+                            })
+        except Exception as e:
+            logger.warning(f"Could not read file {filepath}: {e}")
+
+    # 4. Report leaks and exit appropriately
+    if leaks:
+        print(f"\n❌ LEAK DETECTED! Found {len(leaks)} sensitive data leak(s):")
+        for leak in leaks:
+            masked = leak["value"]
+            if len(masked) > 8:
+                masked = masked[:3] + "..." + masked[-3:]
+            print(f"  - [{leak['type']}] Value '{masked}' found in {leak['file']} on line {leak['line']}")
+        sys.exit(1)
+    else:
+        print("\n✅ SECURE: No sensitive data leaks detected in the scanned target.")
+        sys.exit(0)
 
 def main():
     # Insert 'generate' subcommand if legacy flags are used directly
-    if len(sys.argv) > 1 and sys.argv[1] not in ["generate", "validate", "-h", "--help"]:
+    if len(sys.argv) > 1 and sys.argv[1] not in ["generate", "validate", "verify-leak", "-h", "--help"]:
         sys.argv.insert(1, "generate")
 
     parser = argparse.ArgumentParser(description="MongoDB Schema-Based Data Generator CLI")
@@ -258,6 +327,12 @@ def main():
     )
     val_parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")
 
+    # --- VERIFY LEAK SUBCOMMAND ---
+    leak_parser = subparsers.add_parser("verify-leak", help="Scan files or directories for leaks using a verifiers list")
+    leak_parser.add_argument("--verifier-file", required=True, help="Path to the JSON leak verifier list file")
+    leak_parser.add_argument("--target", required=True, help="Path to the file or directory to scan for leaks")
+    leak_parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")
+
     args = parser.parse_args()
 
     # Default command is generate if none specified
@@ -272,6 +347,9 @@ def main():
         run_generation(args, gen_parser)
     elif args.command == "validate":
         run_validation(args)
+    elif args.command == "verify-leak":
+        run_verify_leak(args, leak_parser)
 
 if __name__ == "__main__":
     main()
+

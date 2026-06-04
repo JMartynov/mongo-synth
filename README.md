@@ -178,8 +178,19 @@ Example `verifier_checklist.json`:
 ]
 ```
 
+#### 5. Leak Scanning & Compliance Audit (`verify-leak`)
+To automate scanning public files, application logs, backups, or system targets for any of the generated honeytoken values, use the `verify-leak` subcommand:
+```bash
+mongo-synth verify-leak \
+  --verifier-file verifier_checklist.json \
+  --target /path/to/logs_or_backup
+```
+*   **Target Scanning**: If the target is a single file, it scans it line-by-line. If the target is a directory, it recursively walks the directory and scans all files.
+*   **CI/CD Pipeline Integration**: The subcommand returns exit code `1` if any sensitive leak matches are found, and `0` if the target is secure, making it ideal for automated security scans in deployment pipelines.
+
 ### Ingestion Robustness & Unique Indexes
 When generating and inserting millions of mock documents, duplicate key collisions can occur on unique database indexes (like email or username). 
+
 
 To prevent ingestion from failing the entire run, the `mongo-synth` ingestion pipeline handles `BulkWriteError` gracefully. It **selectively ignores duplicate key violations** (MongoDB error codes `11000` and `11001`), logging warnings and continuing, while still correctly reporting the total count of written records. 
 

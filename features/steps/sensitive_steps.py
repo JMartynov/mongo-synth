@@ -109,3 +109,41 @@ def step_impl_bulk_insert_duplicates(context):
 @then('the ingestion should succeed without raising an error')
 def step_impl_ingest_succeeds(context):
     pass
+
+@given('a verifier list file "{file_path}" containing:')
+def step_impl_create_verifier_file(context, file_path):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w") as f:
+        f.write(context.text)
+    context.verifier_path = file_path
+
+@given('a log file "{file_path}" with content:')
+def step_impl_create_log_file(context, file_path):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w") as f:
+        f.write(context.text)
+    context.log_path = file_path
+
+@when('I run the mongo-synth verify-leak tool with verifier file "{verifier_file}" and target "{target_file}"')
+def step_impl_run_verify_leak_tool(context, verifier_file, target_file):
+    import subprocess
+    cmd = [
+        ".venv/bin/python", "-m", "mongo_synth.cli", "verify-leak",
+        "--verifier-file", verifier_file,
+        "--target", target_file
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    context.cli_returncode = res.returncode
+    context.cli_stdout = res.stdout
+    context.cli_stderr = res.stderr
+
+@then('the verification operation should fail detecting a leak')
+def step_impl_check_verification_fail(context):
+    assert context.cli_returncode != 0, f"Expected non-zero returncode but got {context.cli_returncode}. Stdout: {context.cli_stdout}, Stderr: {context.cli_stderr}"
+    assert "LEAK DETECTED" in context.cli_stdout, f"Expected LEAK DETECTED but got: {context.cli_stdout}"
+
+@then('the verification operation should succeed detecting no leaks')
+def step_impl_check_verification_success(context):
+    assert context.cli_returncode == 0, f"Expected zero returncode but got {context.cli_returncode}. Stdout: {context.cli_stdout}, Stderr: {context.cli_stderr}"
+    assert "SECURE" in context.cli_stdout, f"Expected SECURE but got: {context.cli_stdout}"
+
