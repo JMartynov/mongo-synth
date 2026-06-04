@@ -4,8 +4,10 @@ from typing import Any, Dict, List, Optional
 from faker import Faker
 
 class SensitiveDataTracker:
-    def __init__(self, run_id: Optional[str] = None):
-        self.faker = Faker()
+    def __init__(self, run_id: Optional[str] = None, seed: Optional[Any] = None, locale: Optional[str] = None):
+        self.faker = Faker(locale) if locale else Faker()
+        if seed is not None:
+            self.faker.seed_instance(seed)
         self.verifiers: List[Dict[str, str]] = []
         self.run_id = run_id
 

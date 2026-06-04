@@ -71,8 +71,15 @@ def run_generation(args, parser):
     if "metadata" not in blueprint:
         blueprint["metadata"] = {}
     blueprint["metadata"]["expected_document_count"] = count
-    blueprint["metadata"]["inject_sensitive"] = getattr(args, "inject_sensitive", False)
-    blueprint["metadata"]["run_id"] = getattr(args, "run_id", None)
+
+    inject_sensitive = args.inject_sensitive if args.inject_sensitive else generator_config.get("generation.inject_sensitive", False)
+    run_id = args.run_id if args.run_id else generator_config.get("generation.run_id", None)
+    sensitive_locale = args.sensitive_locale if args.sensitive_locale else generator_config.get("generation.sensitive_locale", None)
+    verifier_output = args.verifier_output if args.verifier_output else generator_config.get("generation.verifier_output", None)
+
+    blueprint["metadata"]["inject_sensitive"] = inject_sensitive
+    blueprint["metadata"]["run_id"] = run_id
+    blueprint["metadata"]["sensitive_locale"] = sensitive_locale
 
     # 4. Instantiate Generator
     if args.model:
@@ -101,12 +108,12 @@ def run_generation(args, parser):
         sys.exit(1)
 
     # Export verifier list
-    if getattr(args, "verifier_output", None):
+    if verifier_output:
         tracker = getattr(generator, "sensitive_tracker", None)
         if tracker:
-            logger.info(f"Writing {len(tracker.verifiers)} verifiers to {args.verifier_output}...")
+            logger.info(f"Writing {len(tracker.verifiers)} verifiers to {verifier_output}...")
             try:
-                with open(args.verifier_output, "w") as f:
+                with open(verifier_output, "w") as f:
                     json.dump(tracker.verifiers, f, indent=2)
                 logger.info("Verifier list written successfully.")
             except Exception as e:
@@ -234,6 +241,7 @@ def main():
     gen_parser.add_argument("--inject-sensitive", action="store_true", help="Automatically inject sensitive PII/secrets fields into all documents")
     gen_parser.add_argument("--verifier-output", help="Path to write the JSON leak verifier list file")
     gen_parser.add_argument("--run-id", help="Canary run identifier to prefix/salt sensitive values with")
+    gen_parser.add_argument("--sensitive-locale", help="Locale for generating synthetic PII (e.g. en_US, de_DE)")
     gen_parser.add_argument("--live-uri", help="Live URI to check safety lock against")
     gen_parser.add_argument("--config-file", help="Path to a YAML configuration file to pre-populate parameters")
     gen_parser.add_argument("--verbose", action="store_true", help="Enable verbose DEBUG logging")

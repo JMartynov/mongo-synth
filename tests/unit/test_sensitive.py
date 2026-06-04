@@ -125,3 +125,30 @@ def test_tracker_auto_inject():
 
     # Check verifiers have been updated for all 8 injected fields
     assert len(tracker.verifiers) == 8
+
+
+def test_tracker_determinism():
+    tracker1 = SensitiveDataTracker(seed=12345)
+    tracker2 = SensitiveDataTracker(seed=12345)
+
+    name1 = tracker1.generate_value("name")
+    name2 = tracker2.generate_value("name")
+    assert name1 == name2
+
+    email1 = tracker1.generate_value("email")
+    email2 = tracker2.generate_value("email")
+    assert email1 == email2
+
+
+def test_tracker_locale():
+    # Verify that a localized tracker is instantiated and operates
+    tracker_de = SensitiveDataTracker(locale="de_DE", seed=99)
+    tracker_en = SensitiveDataTracker(locale="en_US", seed=99)
+
+    # Generated PII fields (like addresses or names) should be different for different locales
+    addr_de = tracker_de.generate_value("address")
+    addr_en = tracker_en.generate_value("address")
+
+    # They should not be identical due to locale-specific providers
+    assert addr_de != addr_en
+

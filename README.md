@@ -134,8 +134,8 @@ mongo-synth generate \
   --inject-sensitive
 ```
 
-#### 3. Canary Run Tagging (`--run-id`)
-Prefix generated values with a custom ID (e.g., pipeline run number or environment name) to trace the origin of a leak:
+#### 3. Canary Run Tagging (`--run-id`) & Localization (`--sensitive-locale`)
+*   **Canary Prefixing**: Prefix generated values with a custom ID (e.g., pipeline run number or environment name) to trace the origin of a leak:
 ```bash
 mongo-synth generate \
   --schema path/to/schema.json \
@@ -144,6 +144,15 @@ mongo-synth generate \
   --run-id dev_stage_pipeline_94
 ```
 This prefixes names, emails, and passwords with `dev_stage_pipeline_94_` and salts API keys like `key_live_dev_stage_pipeline_94_...`.
+
+*   **PII Localization**: Specify a locale (default `en_US`) to generate localized synthetic names, addresses, and phone formats (e.g., `de_DE`, `fr_FR`, `en_GB`):
+```bash
+mongo-synth generate \
+  --schema path/to/schema.json \
+  --count 1000 \
+  --inject-sensitive \
+  --sensitive-locale de_DE
+```
 
 #### 4. Leak Verifiers Export (`--verifier-output`)
 Export the list of all generated sensitive values to a structured JSON file to act as the leak audit checklist:
@@ -172,6 +181,8 @@ Example `verifier_checklist.json`:
 ### Ingestion Robustness & Unique Indexes
 When generating and inserting millions of mock documents, duplicate key collisions can occur on unique database indexes (like email or username). 
 
-To prevent ingestion from failing the entire run, the `mongo-synth` ingestion pipeline handles `BulkWriteError` gracefully. It logs warnings for duplicate keys while successfully inserting other non-colliding records, reporting the correct total count of written records.
+To prevent ingestion from failing the entire run, the `mongo-synth` ingestion pipeline handles `BulkWriteError` gracefully. It **selectively ignores duplicate key violations** (MongoDB error codes `11000` and `11001`), logging warnings and continuing, while still correctly reporting the total count of written records. 
+
+Any structural errors (such as MongoDB Schema Document Validation failures, error code `121`) are **re-raised immediately** to prevent silent configuration or constraint validation bugs.
 
 ```

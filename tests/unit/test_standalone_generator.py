@@ -533,4 +533,93 @@ def test_data_ingester_bulk_write_error_handling():
         ingester._insert_batch(batch)
 
 
+def test_data_ingester_bulk_write_error_re_raises_on_validation():
+    from pymongo.errors import BulkWriteError
+    
+    mock_collection = MagicMock()
+    # Mock insert_many to raise BulkWriteError with a validation error code 121
+    bwe = BulkWriteError({"nInserted": 1, "writeErrors": [{"index": 1, "errmsg": "Document failed validation", "code": 121}]})
+    mock_collection.insert_many.side_effect = bwe
+
+    ingester = DataIngester(
+        target_collection=mock_collection,
+        target_uri="mongodb://localhost:27017"
+    )
+
+    batch = [{"_id": i} for i in range(2)]
+    # Should not swallow validation errors, must re-raise the exception
+    with pytest.raises(BulkWriteError):
+        ingester._insert_batch(batch)
+
+
+def test_cli_yaml_config_fallback():
+    from mongo_synth.cli import run_generation
+    from mongo_synth.config import generator_config
+    import yaml
+    import tempfile
+    import os
+    
+    config_data = {
+        "generation": {
+            "inject_sensitive": True,
+            "run_id": "yaml_run",
+            "sensitive_locale": "fr_FR",
+            "verifier_output": "yaml_verifiers.json"
+        }
+    }
+    
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f_yaml, \
+         tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f_schema:
+         
+        yaml.dump(config_data, f_yaml)
+        json.dump({"type": "object", "properties": {"name": {"type": "string"}}}, f_schema)
+        f_yaml.close()
+        f_schema.close()
+        
+        try:
+            parser = MagicMock()
+            args = MagicMock()
+            args.schema = f_schema.name
+            args.model = None
+            args.config_file = f_yaml.name
+            args.uri = None
+            args.db = None
+            args.collection = None
+            args.live_uri = None
+            args.count = 2
+            args.batch_size = None
+            args.seed = None
+            args.profile = None
+            args.anomaly = None
+            args.clear = False
+            # CLI args are unset so they fall back to YAML
+            args.inject_sensitive = False
+            args.run_id = None
+            args.sensitive_locale = None
+            args.verifier_output = None
+            
+            with patch("mongo_synth.cli.MongoClient") as mock_client, \
+                 patch("mongo_synth.cli.DataIngester") as mock_ingester, \
+                 patch("builtins.open", side_effect=open):
+                 
+                mock_db = MagicMock()
+                mock_coll = MagicMock()
+                mock_client.return_value.__getitem__.return_value = mock_db
+                mock_db.__getitem__.return_value = mock_coll
+                mock_ingester_instance = mock_ingester.return_value
+                mock_ingester_instance.ingest.return_value = 2
+                
+                run_generation(args, parser)
+                
+                # Check that config values were loaded correctly into generator_config
+                assert generator_config.get("generation.inject_sensitive") is True
+                assert generator_config.get("generation.run_id") == "yaml_run"
+                assert generator_config.get("generation.sensitive_locale") == "fr_FR"
+                assert generator_config.get("generation.verifier_output") == "yaml_verifiers.json"
+        finally:
+            os.unlink(f_yaml.name)
+            os.unlink(f_schema.name)
+
+
+
 

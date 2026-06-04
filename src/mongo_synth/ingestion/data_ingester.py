@@ -210,9 +210,18 @@ class DataIngester:
                 return len(res.inserted_ids)
             return len(batch)
         except BulkWriteError as bwe:
+            # Re-raise if there are errors other than duplicate key violations (11000/11001)
+            other_errors = [
+                err for err in bwe.details.get("writeErrors", [])
+                if err.get("code") not in (11000, 11001)
+            ]
+            if other_errors:
+                logger.error(f"Bulk write error contains non-duplicate key violations: {other_errors}")
+                raise
+
             n_inserted = bwe.details.get("nInserted", 0)
             logger.warning(
-                f"Gracefully handled bulk write error during ingestion. "
+                f"Gracefully handled bulk write error (duplicate keys) during ingestion. "
                 f"Successfully inserted {n_inserted} of {len(batch)} documents in this batch. "
                 f"Errors: {len(bwe.details.get('writeErrors', []))}"
             )

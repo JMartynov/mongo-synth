@@ -20,7 +20,8 @@ class BaseGenerator(ABC):
         self.seed = seed
         
         run_id = self.metadata.get("run_id")
-        self.sensitive_tracker = SensitiveDataTracker(run_id=run_id)
+        locale = self.metadata.get("sensitive_locale")
+        self.sensitive_tracker = SensitiveDataTracker(run_id=run_id, seed=self.seed, locale=locale)
 
     @staticmethod
     def _disable_additional_properties(s: Any) -> None:
