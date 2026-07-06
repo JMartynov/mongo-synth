@@ -12,6 +12,17 @@ from mongo_synth.ingestion.data_ingester import DataIngester, SecurityError
 
 # Helper to start containers dynamically
 def start_mongo_container(context, version, auth=False):
+    if hasattr(context, "mongo_container") and context.mongo_container:
+        try:
+            context.mongo_container.reload()
+            if context.mongo_container.status == "running":
+                # Make sure the client is connected
+                if context.mongo_client:
+                    context.mongo_client.admin.command("ping")
+                    return
+        except Exception:
+            pass
+
     client = context.client
     container_name = f"mongo-synth-test-{version.replace('.', '_')}"
     if auth:

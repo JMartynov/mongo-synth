@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "quantity": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "quantity"
+  ]
+}

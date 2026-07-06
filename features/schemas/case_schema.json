@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enumValues": [
+        "B8F9A2C3D4E5F678"
+      ]
+    }
+  },
+  "required": [
+    "status"
+  ]
+}

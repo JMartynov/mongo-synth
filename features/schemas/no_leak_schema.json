@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "token": {
+      "type": "string",
+      "enumValues": [
+        "b8f9a2c3d4e5f678"
+      ]
+    }
+  },
+  "required": [
+    "token"
+  ]
+}

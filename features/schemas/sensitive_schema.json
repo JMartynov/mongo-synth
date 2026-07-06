@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string",
+      "sensitiveType": "email"
+    },
+    "api_token": {
+      "type": "string",
+      "sensitiveType": "api_key"
+    }
+  },
+  "required": [
+    "user_email",
+    "api_token"
+  ]
+}

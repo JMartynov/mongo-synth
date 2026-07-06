@@ -40,6 +40,13 @@ class DistributionInjector:
         if field_schema.get("format") in ["uuid", "email"]:
             return True
 
+        if field_schema.get("unique") or field_schema.get("uniqueItems") or field_schema.get("cardinality") in ("high", "unique"):
+            return True
+
+        # bsonType annotations that imply uniqueness/high-cardinality
+        if field_schema.get("bsonType") in ("objectId", "date", "timestamp", "regex", "decimal", "binData"):
+            return True
+
         return False
 
     def inject_distribution(self, document: Dict[str, Any]) -> Dict[str, Any]:

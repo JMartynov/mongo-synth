@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 from bson.objectid import ObjectId
 from bson.decimal128 import Decimal128
 from bson.binary import Binary
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import random
 import string
 from mongo_synth.generators.sensitive import SensitiveDataTracker
@@ -17,7 +17,15 @@ class BaseGenerator(ABC):
         self.schema = blueprint.get("schema", {})
         self.metadata = blueprint.get("metadata", {})
         self.documents_per_collection = documents_per_collection
-        self.seed = seed
+        if seed is not None:
+            self.seed = seed
+        else:
+            try:
+                from mongo_synth.config import generator_config
+                self.seed = generator_config.get("generation.master_seed", 42)
+            except Exception:
+                self.seed = 42
+        self._rng = random.Random(self.seed)
         
         run_id = self.metadata.get("run_id")
         locale = self.metadata.get("sensitive_locale")
@@ -38,11 +46,31 @@ class BaseGenerator(ABC):
                 for item in v:
                     BaseGenerator._disable_additional_properties(item)
 
+    def _transform_enum_values(self, s: Any) -> None:
+        """Recursively replaces enumValues with enum in a JSON schema if it is non-empty, and adds format: date-time for bsonType: date."""
+        if not isinstance(s, dict):
+            return
+        if "enumValues" in s:
+            ev = s["enumValues"]
+            if isinstance(ev, list) and len(ev) > 0:
+                s["enum"] = ev
+        if s.get("bsonType") == "date" and "format" not in s:
+            s["format"] = "date-time"
+        for v in s.values():
+            if isinstance(v, dict):
+                self._transform_enum_values(v)
+            elif isinstance(v, list):
+                for item in v:
+                    self._transform_enum_values(item)
+
     def generate_batch(self) -> List[Dict[str, Any]]:
         """Generates a batch of documents based on the blueprint."""
+        if self.seed is not None:
+            random.seed(self.seed)
         # Ensure additionalProperties is False for clean testing
         schema_copy = json.loads(json.dumps(self.schema))
         BaseGenerator._disable_additional_properties(schema_copy)
+        self._transform_enum_values(schema_copy)
 
         strategy = from_schema(schema_copy)
 
@@ -53,8 +81,16 @@ class BaseGenerator(ABC):
         # then replicate/clone to avoid engine performance bottlenecks.
         pool_size = min(count, 1000)
 
+        settings_kwargs = {
+            "max_examples": pool_size,
+            "suppress_health_check": list(HealthCheck),
+            "deadline": None
+        }
+        if self.seed is not None:
+            settings_kwargs["derandomize"] = True
+
         @given(strategy)
-        @settings(max_examples=pool_size, suppress_health_check=list(HealthCheck), deadline=None)
+        @settings(**settings_kwargs)
         def gen(doc):
             if len(batch) < pool_size:
                 bson_doc = self.apply_bson_translation(doc, self.schema)
@@ -66,8 +102,8 @@ class BaseGenerator(ABC):
             for _ in range(pool_size):
                 batch.append(self.apply_bson_translation({}, self.schema))
 
-        # Replicate to target count if count exceeds pool_size
-        if count > pool_size:
+        # Replicate to target count if batch size is less than count
+        if len(batch) < count and len(batch) > 0:
             import copy
             high_card_fields = self._find_high_cardinality_fields(self.schema)
             original_pool = list(batch)
@@ -84,6 +120,112 @@ class BaseGenerator(ABC):
 
         # Apply distribution profile to the batch
         batch = self.apply_distribution_profile(batch)
+
+        # Apply percentileStats piecewise linear interpolation
+        percentile_stats_input = (
+            self.blueprint.get("percentileStats") or 
+            self.schema.get("percentileStats") or 
+            self.metadata.get("percentileStats")
+        )
+        if percentile_stats_input:
+            percentile_stats_list = []
+            if isinstance(percentile_stats_input, dict):
+                percentile_stats_list = [percentile_stats_input]
+            elif isinstance(percentile_stats_input, list):
+                percentile_stats_list = percentile_stats_input
+
+            for stats in percentile_stats_list:
+                if not isinstance(stats, dict):
+                    continue
+                field_name = stats.get("fieldName")
+                boundary_val = stats.get("boundaryValue")
+                lower_percentile = stats.get("lowerPercentile")
+                if field_name is None or boundary_val is None or lower_percentile is None:
+                    continue
+
+                path = field_name.split(".")
+                
+                # Gather indices and non-null values
+                non_null_indices = []
+                non_null_values = []
+                for idx, doc in enumerate(batch):
+                    val = self._get_value_by_path(doc, path)
+                    if val is not None:
+                        non_null_indices.append(idx)
+                        non_null_values.append(val)
+                
+                if not non_null_values:
+                    continue
+                
+                # Check if it is datetime or numeric
+                is_date = all(isinstance(v, datetime) for v in non_null_values)
+                
+                if is_date:
+                    # Convert boundary value to datetime if it is a string
+                    b_val = boundary_val
+                    if isinstance(b_val, str):
+                        try:
+                            if b_val.endswith("Z"):
+                                b_val = b_val[:-1] + "+00:00"
+                            b_val = datetime.fromisoformat(b_val)
+                        except ValueError:
+                            pass
+                    
+                    if isinstance(b_val, datetime):
+                        if b_val.tzinfo is None:
+                            b_val = b_val.replace(tzinfo=timezone.utc)
+                        b_num = b_val.timestamp()
+                    else:
+                        b_num = float(b_val)
+                    
+                    numeric_values = [(v.replace(tzinfo=timezone.utc).timestamp(), idx) for idx, v in enumerate(non_null_values)]
+                    numeric_values.sort(key=lambda x: x[0])
+                else:
+                    numeric_values = [(float(v), idx) for idx, v in enumerate(non_null_values)]
+                    numeric_values.sort(key=lambda x: x[0])
+                    b_num = float(boundary_val)
+                
+                N_val = len(numeric_values)
+                M_val = int(N_val * lower_percentile)
+                
+                Min_val = numeric_values[0][0]
+                Max_val = numeric_values[-1][0]
+                
+                interpolated_numeric = [0.0] * N_val
+                for i in range(N_val):
+                    if i < M_val:
+                        if M_val > 0:
+                            val_num = Min_val + (b_num - Min_val) * (i / M_val)
+                        else:
+                            val_num = b_num
+                    else:
+                        if N_val - M_val > 0:
+                            val_num = b_num + (Max_val - b_num) * ((i - M_val) / (N_val - M_val))
+                        else:
+                            val_num = b_num
+                    
+                    orig_idx = numeric_values[i][1]
+                    interpolated_numeric[orig_idx] = val_num
+                
+                # Map back to types
+                interpolated_values = []
+                field_schema = self._get_schema_by_path(self.schema, path)
+                is_int = False
+                if field_schema:
+                    if field_schema.get("type") == "integer" or field_schema.get("bsonType") in ("int", "long"):
+                        is_int = True
+                
+                for num_v in interpolated_numeric:
+                    if is_date:
+                        interpolated_values.append((datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=num_v)).replace(tzinfo=None))
+                    elif is_int:
+                        interpolated_values.append(int(round(num_v)))
+                    else:
+                        interpolated_values.append(num_v)
+                
+                # Update documents
+                for idx, orig_pos in enumerate(non_null_indices):
+                    self._set_value_by_path(batch[orig_pos], path, interpolated_values[idx])
 
         # Auto-inject sensitive PII if enabled
         if self.metadata.get("inject_sensitive", False):
@@ -152,6 +294,27 @@ class BaseGenerator(ABC):
 
     def _generate_unique_value(self, current_value: Any, schema: Dict[str, Any]) -> Any:
         """Generates a new, unique value based on the field schema and current value type."""
+        enum_values = schema.get("enumValues")
+        if enum_values and isinstance(enum_values, list) and len(enum_values) > 0:
+            schema_id = id(schema)
+            if not hasattr(self, "_unique_counters"):
+                self._unique_counters = {}
+            if schema_id not in self._unique_counters:
+                self._unique_counters[schema_id] = 0
+            
+            token = None
+            if isinstance(current_value, str):
+                for ev in enum_values:
+                    if current_value.endswith(ev):
+                        token = ev
+                        break
+            if token is None:
+                token = self._rng.choice(enum_values)
+                
+            prefix = f"{self._unique_counters[schema_id]}_"
+            self._unique_counters[schema_id] += 1
+            return prefix + token
+
         sensitive_type = schema.get("sensitiveType")
         if sensitive_type:
             return self.sensitive_tracker.generate_value(sensitive_type)
@@ -245,13 +408,15 @@ class BaseGenerator(ABC):
 
     def apply_distribution_profile(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Applies statistical distribution profiles to a batch of documents."""
-        profile = getattr(self, "metadata", {}).get("profile")
-        if not profile:
+        profile = getattr(self, "metadata", {}).get("profile") or {}
+        distribution = getattr(self, "metadata", {}).get("distribution") or {}
+        merged_profile = {**profile, **distribution}
+        if not merged_profile:
             return batch
 
         if not hasattr(self, "_distribution_injector"):
             from mongo_synth.generators.distribution_injector import DistributionInjector
-            self._distribution_injector = DistributionInjector(self.schema, profile, seed=self.seed)
+            self._distribution_injector = DistributionInjector(self.schema, merged_profile, seed=self.seed)
 
         return self._distribution_injector.inject_batch(batch)
 
@@ -297,6 +462,13 @@ class BaseGenerator(ABC):
             elif bson_type == "date":
                 if isinstance(doc, datetime):
                     return doc
+                elif isinstance(doc, str):
+                    try:
+                        if doc.endswith("Z"):
+                            doc = doc[:-1] + "+00:00"
+                        return datetime.fromisoformat(doc).replace(tzinfo=None)
+                    except ValueError:
+                        pass
                 elif isinstance(doc, (int, float)):
                     try:
                         return datetime.utcfromtimestamp(doc)
@@ -377,3 +549,40 @@ class BaseGenerator(ABC):
             return doc.replace("\x00", "")
 
         return doc
+
+    def _get_value_by_path(self, doc: Any, path: List[str]) -> Any:
+        if not path:
+            return doc
+        if not isinstance(doc, dict):
+            return None
+        key = path[0]
+        if len(path) == 1:
+            return doc.get(key)
+        return self._get_value_by_path(doc.get(key), path[1:])
+
+    def _set_value_by_path(self, doc: Any, path: List[str], val: Any) -> None:
+        if not path or not isinstance(doc, dict):
+            return
+        key = path[0]
+        if len(path) == 1:
+            doc[key] = val
+            return
+        if key not in doc or not isinstance(doc[key], dict):
+            doc[key] = {}
+        self._set_value_by_path(doc[key], path[1:], val)
+
+    def _get_schema_by_path(self, schema: Any, path: List[str]) -> Any:
+        if not path:
+            return schema
+        if not isinstance(schema, dict):
+            return None
+        
+        key = path[0]
+        properties = schema.get("properties", {})
+        if key in properties:
+            return self._get_schema_by_path(properties[key], path[1:])
+            
+        if schema.get("type") == "array" or "items" in schema:
+            return self._get_schema_by_path(schema.get("items", {}), path)
+            
+        return None

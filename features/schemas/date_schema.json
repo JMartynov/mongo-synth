@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "created_at": {
+      "type": "string",
+      "bsonType": "date"
+    }
+  },
+  "required": [
+    "created_at"
+  ]
+}

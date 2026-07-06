@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "token": {
+      "type": "string",
+      "enumValues": [],
+      "minLength": 5
+    }
+  },
+  "required": [
+    "token"
+  ]
+}
