@@ -323,7 +323,7 @@ class BaseGenerator(ABC):
         if bson_type == "objectId":
             return ObjectId()
         elif bson_type == "date":
-            return datetime.utcnow()
+            return datetime.now(timezone.utc).replace(tzinfo=None)
         elif bson_type == "timestamp":
             from bson.timestamp import Timestamp
             import time
