@@ -13,7 +13,6 @@ def before_all(context):
     context.client = docker.from_env()
 
 def before_scenario(context, scenario):
-    global _mongo_container, _mongo_uri, _mongo_client
     context.client = docker.from_env()
     
     # Populate the context with the active container details if they exist
@@ -37,7 +36,6 @@ def after_scenario(context, scenario):
         _mongo_client = context.mongo_client
 
 def after_all(context):
-    global _mongo_container
     if _mongo_container:
         try:
             logger.info(f"Stopping and removing global MongoDB container: {_mongo_container.name}")
