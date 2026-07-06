@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 from bson.objectid import ObjectId
 from bson.decimal128 import Decimal128
 from bson.binary import Binary
+from bson.regex import Regex
 from datetime import datetime, timezone, timedelta
 import random
 import string
@@ -102,10 +103,44 @@ class BaseGenerator(ABC):
             for _ in range(pool_size):
                 batch.append(self.apply_bson_translation({}, self.schema))
 
+        # Dedup high cardinality fields in the base pool to ensure uniqueness from the start
+        high_card_fields = self._find_high_cardinality_fields(self.schema)
+        seen_values = {tuple(path): set() for path, _ in high_card_fields}
+        for doc in batch:
+            if isinstance(doc, dict):
+                for path, field_schema in high_card_fields:
+                    val = self._get_value_by_path(doc, path)
+                    if val is not None:
+                        path_tuple = tuple(path)
+                        # Convert to comparison keys for unhashable types
+                        comparison_val = val
+                        if isinstance(val, (dict, list)):
+                            comparison_val = json.dumps(val, sort_keys=True)
+                        elif isinstance(val, Decimal128):
+                            comparison_val = str(val)
+                        elif isinstance(val, Binary):
+                            comparison_val = bytes(val)
+                        elif isinstance(val, Regex):
+                            comparison_val = (val.pattern, val.flags)
+                        
+                        while comparison_val in seen_values[path_tuple]:
+                            val = self._generate_unique_value(val, field_schema)
+                            comparison_val = val
+                            if isinstance(val, (dict, list)):
+                                comparison_val = json.dumps(val, sort_keys=True)
+                            elif isinstance(val, Decimal128):
+                                comparison_val = str(val)
+                            elif isinstance(val, Binary):
+                                comparison_val = bytes(val)
+                            elif isinstance(val, Regex):
+                                comparison_val = (val.pattern, val.flags)
+                        
+                        seen_values[path_tuple].add(comparison_val)
+                        self._set_value_by_path(doc, path, val)
+
         # Replicate to target count if batch size is less than count
         if len(batch) < count and len(batch) > 0:
             import copy
-            high_card_fields = self._find_high_cardinality_fields(self.schema)
             original_pool = list(batch)
             while len(batch) < count:
                 needed = count - len(batch)
