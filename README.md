@@ -203,4 +203,75 @@ When generating and inserting millions of mock documents, several database-level
 
 Any structural errors (such as MongoDB Schema Document Validation failures, error code `121`) are **re-raised immediately** to prevent silent configuration or constraint validation bugs.
 
+---
+
+## 📊 Advanced Multi-Mode Extensions (Percentile Stats & Hashed Enums)
+
+`mongo-synth` supports advanced data scaling and custom hash enums to reproduce real-world databases with high fidelity.
+
+### 1. Percentile-Aware Piecewise Linear Interpolation (`percentileStats`)
+When generating numeric or date fields, generating random values within a min/max range often creates a flat uniform distribution that doesn't mirror production data.
+By specifying a `percentileStats` configuration block in your blueprint or schema, the generator automatically scales and interpolates values so that a target percentile falls exactly at a specified boundary value.
+
+#### Configuration Example
+```json
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "price": { "type": "number" },
+      "created_at": { "type": "string", "bsonType": "date" }
+    }
+  },
+  "percentileStats": [
+    {
+      "fieldName": "price",
+      "boundaryValue": 100.0,
+      "lowerPercentile": 0.3
+    },
+    {
+      "fieldName": "created_at",
+      "boundaryValue": "2026-01-01T00:00:00Z",
+      "lowerPercentile": 0.5
+    }
+  ]
+}
+```
+* **Price Invariant**: Exactly 30% of the generated prices will be less than `100.0` (with 70% greater than or equal to `100.0`).
+* **Date Invariant**: Exactly 50% of the generated timestamps will be before `2026-01-01T00:00:00Z` (UTC).
+* **Null Preservation**: Any null values generated for optional fields (e.g. `anyOf: [{"type": "number"}, {"type": "null"}]`) are skipped during sorting and preserved exactly at their original indices.
+* **Type Coercion**: Fields marked as `integer` or BSON `int`/`long` types are automatically rounded to the nearest integer.
+
+---
+
+### 2. Hashed Categorical Enums (`enumValues`)
+Standard JSON Schema `enum` arrays limit categorical choices, and running standard categorical generators might cause duplicate key errors on fields with unique indexes.
+`mongo-synth` parses the custom `enumValues` keyword to generate categorical options (like tokens or hashes) that can be coupled with skewed relative distributions.
+
+#### Configuration Example
+```json
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enumValues": ["b8f9a2c3d4e5f678", "e5f678a2b8f9a2c3"],
+        "unique": true
+      }
+    }
+  },
+  "metadata": {
+    "distribution": {
+      "status": {
+        "b8f9a2c3d4e5f678": 0.9,
+        "e5f678a2b8f9a2c3": 0.1
+      }
+    }
+  }
+}
+```
+* **Weight Distribution**: Injects the enums with relative probability (90% for the first token, 10% for the second token).
+* **Unique Index Collision Prevention**: If the field has a unique constraint (`"unique": true`), the generator automatically prepends a unique integer prefix (e.g. `0_b8f9a2c3d4e5f678`, `1_b8f9a2c3d4e5f678`) to allow successful bulk insertions into a MongoDB collection with unique indexes without crashing.
+
 ```
